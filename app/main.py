@@ -14,7 +14,7 @@ import random
 import signal
 import sys
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import requests
 
@@ -34,12 +34,20 @@ logging.basicConfig(
 log = logging.getLogger("flatwatch.main")
 
 _STOP = False
+_TRIGGER_NOW = False
 
 
 def _handle_signal(signum, _frame):
     global _STOP
     log.info("Received signal %s — finishing current cycle then exiting.", signum)
     _STOP = True
+
+
+def _handle_trigger(signum, _frame):
+    """SIGUSR1 → run one cycle immediately, tagged trigger=manual."""
+    global _TRIGGER_NOW
+    log.info("Received signal %s — scheduling an on-demand manual cycle.", signum)
+    _TRIGGER_NOW = True
 
 
 def fetch_all(cfg: Config, session: requests.Session, run: Run) -> Tuple[List[Listing], int, int]:
@@ -128,9 +136,14 @@ def run_cycle(
     session: requests.Session,
     *,
     prime: bool,
+    trigger: Optional[str] = None,
 ) -> dict:
-    """Execute one poll cycle. Returns the heartbeat stats dict."""
-    run = runlogger.start(trigger="startup_prime" if prime else "scheduled")
+    """Execute one poll cycle. Returns the heartbeat stats dict.
+
+    ``trigger`` overrides the recorded trigger; when omitted it is derived as
+    ``startup_prime`` on the priming run and ``scheduled`` thereafter.
+    """
+    run = runlogger.start(trigger=trigger or ("startup_prime" if prime else "scheduled"))
     notified = 0
     new_count = 0
     filtered_count = 0
@@ -240,8 +253,11 @@ def _seen_extra(listing: Listing) -> dict:
 
 
 def main() -> int:
+    global _TRIGGER_NOW
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
+    if hasattr(signal, "SIGUSR1"):  # POSIX only; enables `docker kill -s USR1`
+        signal.signal(signal.SIGUSR1, _handle_trigger)
 
     cfg = load_config()
     session = requests.Session()
@@ -259,28 +275,41 @@ def main() -> int:
     )
 
     first = True
+    manual = False
     while not _STOP:
         try:
-            run_cycle(cfg, store, notifier, runlogger, session, prime=first)
+            trigger = "manual" if manual else None
+            run_cycle(cfg, store, notifier, runlogger, session, prime=first, trigger=trigger)
         except Exception:  # ultimate backstop — the loop must never die
             log.exception("Unexpected top-level cycle error; continuing.")
         first = False
+        manual = False
 
         if _STOP:
             break
-        _sleep_interval(cfg.poll_interval_min)
+        # Wake early for an on-demand manual cycle (SIGUSR1); otherwise sleep the interval.
+        if _sleep_interval(cfg.poll_interval_min) and _TRIGGER_NOW:
+            _TRIGGER_NOW = False
+            manual = True
 
     log.info("flatwatch stopped.")
     return 0
 
 
-def _sleep_interval(poll_interval_min: int) -> None:
-    """Sleep the poll interval in 1s slices so signals interrupt promptly."""
+def _sleep_interval(poll_interval_min: int) -> bool:
+    """Sleep the poll interval in 1s slices so signals interrupt promptly.
+
+    Returns early (True) if a manual trigger arrives mid-sleep, else returns
+    True after the full interval; only an exit signal makes it stop short.
+    """
     total = poll_interval_min * 60 + random.uniform(0, 30)  # small jitter
     waited = 0.0
     while waited < total and not _STOP:
+        if _TRIGGER_NOW:
+            return True
         time.sleep(1)
         waited += 1
+    return True
 
 
 if __name__ == "__main__":

@@ -197,6 +197,17 @@ backing database) at these tables:
 
 ---
 
+## On-demand cycle (manual trigger)
+
+Send `SIGUSR1` to run one cycle immediately instead of waiting for the next
+interval — the run is recorded with `trigger=manual`:
+
+```bash
+docker kill -s USR1 flatwatch          # or: kill -USR1 <pid>
+```
+
+`SIGTERM`/`SIGINT` still finish the current cycle and exit cleanly.
+
 ## Health
 
 After every cycle a heartbeat is written to `HEALTH_PATH` (`/data/health.json`)

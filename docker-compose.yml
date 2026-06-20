@@ -3,7 +3,12 @@
 # Configuration is read from a sibling .env file (copy .env.example).
 services:
   flatwatch:
-    build: .
+    build:
+      context: .
+      args:
+        # Override with the image tag / git sha at build time:
+        #   docker compose build --build-arg APP_VERSION=$(git rev-parse --short HEAD)
+        APP_VERSION: ${APP_VERSION:-dev}
     image: flatwatch:latest
     container_name: flatwatch
     restart: unless-stopped

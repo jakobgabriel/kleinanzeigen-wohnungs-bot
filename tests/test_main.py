@@ -171,3 +171,47 @@ def test_cycle_survives_source_exception(tmp_path, monkeypatch):
     # Cycle completes despite the source failing.
     assert stats["new_count"] == 0
     assert stats["status"] in ("partial", "failed")
+
+
+def _spy_trigger(monkeypatch, runlogger):
+    captured = {}
+    orig = runlogger.start
+
+    def spy(trigger="scheduled"):
+        captured["trigger"] = trigger
+        return orig(trigger=trigger)
+
+    monkeypatch.setattr(runlogger, "start", spy)
+    return captured
+
+
+def test_trigger_derived_scheduled_and_prime(tmp_path, monkeypatch):
+    _patch_fetch(monkeypatch, [_listing(1)])
+    cfg, store, notifier, runlogger = _make(tmp_path, [])
+    monkeypatch.setattr(notifier, "notify", lambda l: _Result())
+
+    cap = _spy_trigger(monkeypatch, runlogger)
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=True)
+    assert cap["trigger"] == "startup_prime"
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
+    assert cap["trigger"] == "scheduled"
+
+
+def test_trigger_manual_override(tmp_path, monkeypatch):
+    _patch_fetch(monkeypatch, [_listing(1)])
+    cfg, store, notifier, runlogger = _make(tmp_path, [])
+    monkeypatch.setattr(notifier, "notify", lambda l: _Result())
+
+    cap = _spy_trigger(monkeypatch, runlogger)
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, trigger="manual")
+    assert cap["trigger"] == "manual"
+
+
+def test_sigusr1_sets_manual_trigger_and_sleep_wakes(monkeypatch):
+    # Handler flips the flag; _sleep_interval returns promptly while it's set.
+    monkeypatch.setattr(main_mod, "_TRIGGER_NOW", False)
+    main_mod._handle_trigger(getattr(main_mod.signal, "SIGUSR1", 10), None)
+    assert main_mod._TRIGGER_NOW is True
+    assert main_mod._sleep_interval(30) is True  # would otherwise block 30 min
+    # reset module global so other tests are unaffected
+    monkeypatch.setattr(main_mod, "_TRIGGER_NOW", False)

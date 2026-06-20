@@ -18,6 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY app/ ./app/
 
+# Image provenance, surfaced in every run record's `version` field.
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 # Persisted dedup store, heartbeat, and run-log backlog live here.
 VOLUME ["/data"]
 
