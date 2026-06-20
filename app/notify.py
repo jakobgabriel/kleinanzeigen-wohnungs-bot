@@ -227,6 +227,37 @@ class Notifier:
             log.info("NEW (no channels configured): %s %s", listing.title, listing.url)
         return result
 
+    def send_alert(self, text: str) -> bool:
+        """Best-effort operational alert (#7) to Telegram and/or email. Never raises."""
+        sent = False
+        if self.cfg.telegram_enabled:
+            sent = self.send_telegram_text(escape(text)) or sent
+        if self.cfg.email_enabled:
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = "[flatwatch] service alert"
+                msg["From"] = self.cfg.email_from
+                msg["To"] = self.cfg.email_to
+                msg.attach(MIMEText(text, "plain", "utf-8"))
+                for attempt in range(self.cfg.max_retries + 1):
+                    try:
+                        with smtplib.SMTP(self.cfg.smtp_host, self.cfg.smtp_port, timeout=self.cfg.http_timeout_s) as server:
+                            if self.cfg.smtp_use_tls:
+                                server.starttls(context=ssl.create_default_context())
+                            if self.cfg.smtp_user and self.cfg.smtp_password:
+                                server.login(self.cfg.smtp_user, self.cfg.smtp_password)
+                            server.send_message(msg)
+                        sent = True
+                        break
+                    except (smtplib.SMTPException, OSError) as exc:
+                        if attempt < self.cfg.max_retries:
+                            self._sleep(2 ** (attempt + 1))
+                            continue
+                        log.error("Alert email failed: %s", exc)
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("Alert email error (ignored): %s", exc)
+        return sent
+
     def send_summary(self, listings: List[Listing]) -> bool:
         """Send one summary message for a batch overflow (C2). Returns delivered."""
         if not listings:

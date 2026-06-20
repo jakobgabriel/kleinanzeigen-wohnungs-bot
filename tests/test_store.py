@@ -41,8 +41,9 @@ class FakeNocoSession:
     def post(self, url, headers=None, data=None, timeout=None):
         if self.down:
             raise requests.ConnectionError("nocodb down")
-        self.inserts += 1
-        self.rows.append(json.loads(data))
+        self.inserts += 1  # one POST call (bulk = one call for the whole batch)
+        body = json.loads(data)
+        self.rows.extend(body if isinstance(body, list) else [body])
         return FakeResp(200, {})
 
 
@@ -156,6 +157,24 @@ def test_schema_check_unreachable_falls_back(tmp_path, caplog):
 def test_schema_check_skipped_without_nocodb(tmp_path):
     cfg = make_config(json_store_path=str(tmp_path / "seen.json"))
     assert SeenStore(cfg, session=FakeNocoSession()).schema_check() is False
+
+
+def test_mark_seen_many_batches_writes(tmp_path):
+    """#4/#5: a batch is one JSON write + one bulk NocoDB POST, not N each."""
+    cfg = _nocodb_config(tmp_path)
+    sess = FakeNocoSession()
+    store = SeenStore(cfg, session=sess)
+    saves = []
+    real_save = store._save_json
+    store._save_json = lambda: (saves.append(1), real_save())[1]
+
+    items = [(f"k:{i}", {"title": f"t{i}"}) for i in range(15)]
+    store.mark_seen_many(items)
+
+    assert sess.inserts == 1          # single bulk POST for all 15
+    assert len(sess.rows) == 15
+    assert len(saves) == 1            # single JSON rewrite for the batch
+    assert all(store.is_new(f"k:{i}") is False for i in range(15))
 
 
 def test_nocodb_down_degrades_to_json(tmp_path, caplog):

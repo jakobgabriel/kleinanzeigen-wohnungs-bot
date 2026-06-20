@@ -334,6 +334,57 @@ def test_same_listing_from_two_searches_notifies_once(tmp_path, monkeypatch):
     assert [l.listing_id for l in notified] == ["kleinanzeigen:1"]  # deduped within cycle
 
 
+def test_repeated_failure_alert_fires_once_then_recovers(tmp_path, monkeypatch):
+    """#6/#7: consecutive failures tracked; one alert at threshold; recovery alert."""
+    from app.config import Criteria
+    from app.searches import Search, SearchProvider
+
+    cfg, store, notifier, runlogger = _make(
+        tmp_path, [], ka_urls=[], rss_urls=[],
+        telegram_token="t", telegram_chat_id="c", failure_alert_threshold=2,
+    )
+    alerts = []
+    monkeypatch.setattr(notifier, "send_alert", lambda text: alerts.append(text) or True)
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+
+    class Prov(SearchProvider):
+        def get_searches(self):
+            return [Search("https://ka/s", "kleinanzeigen", Criteria())]
+
+    prov = Prov(cfg, DummySession())
+    state = main_mod.CycleState()
+
+    def boom(url, **kw):
+        raise main_mod.sources.FetchError("503 fail")
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", boom)
+
+    # Cycle 1: failed, below threshold -> no alert.
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, search_provider=prov, state=state)
+    assert state.consecutive_failures == 1 and alerts == []
+    # Cycle 2: reaches threshold -> one alert.
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, search_provider=prov, state=state)
+    assert state.consecutive_failures == 2 and len(alerts) == 1
+    # Cycle 3: still failing -> not repeated.
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, search_provider=prov, state=state)
+    assert len(alerts) == 1
+
+    # Recovery: a clean cycle resets and sends the recovery note.
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", lambda u, **k: [])
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, search_provider=prov, state=state)
+    assert state.consecutive_failures == 0 and len(alerts) == 2
+
+
+def test_health_stats_include_failure_fields(tmp_path, monkeypatch):
+    listings = [_listing(1)]
+    _patch_fetch(monkeypatch, listings)
+    cfg, store, notifier, runlogger = _make(tmp_path, listings)
+    monkeypatch.setattr(notifier, "notify", lambda l: _Result())
+    stats = main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, state=main_mod.CycleState())
+    assert "consecutive_failures" in stats and "last_success_at" in stats
+    assert stats["stale_after_s"] == cfg.health_stale_after_s
+    assert stats["fail_threshold"] == cfg.failure_alert_threshold
+
+
 def test_sigusr1_sets_manual_trigger_and_sleep_wakes(monkeypatch):
     # Handler flips the flag; _sleep_interval returns promptly while it's set.
     monkeypatch.setattr(main_mod, "_TRIGGER_NOW", False)

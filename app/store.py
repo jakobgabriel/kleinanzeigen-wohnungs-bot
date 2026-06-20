@@ -107,24 +107,34 @@ class SeenStore:
         except (requests.RequestException, ValueError) as exc:
             self._note_nocodb_down(exc)
 
-    def _nocodb_insert(self, listing_id: str, extra: Optional[dict] = None) -> bool:
-        if not self.cfg.nocodb_enabled:
+    def _nocodb_insert_many(self, payloads: list) -> bool:
+        """Bulk-insert rows via NocoDB's array body, paginated by the bulk limit.
+
+        Mirrors runlog._insert_events. One POST per page instead of one per id (#5).
+        """
+        if not self.cfg.nocodb_enabled or not payloads:
             return False
-        payload = {self.cfg.nocodb_id_field: listing_id}
-        if extra:
-            payload.update(extra)
+        url = self._nocodb_url()
         try:
-            resp = self._session.post(
-                self._nocodb_url(),
-                headers=self._nocodb_headers(),
-                data=json.dumps(payload),
-                timeout=self.cfg.http_timeout_s,
-            )
-            resp.raise_for_status()
+            for start in range(0, len(payloads), _NOCODB_PAGE):
+                batch = payloads[start : start + _NOCODB_PAGE]
+                resp = self._session.post(
+                    url,
+                    headers=self._nocodb_headers(),
+                    data=json.dumps(batch),
+                    timeout=self.cfg.http_timeout_s,
+                )
+                resp.raise_for_status()
             return True
         except (requests.RequestException, ValueError) as exc:
             self._note_nocodb_down(exc)
             return False
+
+    def _payload(self, listing_id: str, extra: Optional[dict] = None) -> dict:
+        payload = {self.cfg.nocodb_id_field: listing_id}
+        if extra:
+            payload.update(extra)
+        return payload
 
     def _note_nocodb_down(self, exc: Exception) -> None:
         if self._nocodb_ok:
@@ -149,12 +159,22 @@ class SeenStore:
             return listing_id not in self._json_ids and listing_id not in self._nocodb_ids
 
     def mark_seen(self, listing_id: str, extra: Optional[dict] = None) -> None:
-        """Persist a listing id to both stores (NocoDB best-effort, JSON always)."""
+        """Persist a single listing id to both stores (thin wrapper over the batch API)."""
+        self.mark_seen_many([(listing_id, extra)])
+
+    def mark_seen_many(self, items: "list") -> None:
+        """Persist many ids at once: one JSON write (#4) + one bulk NocoDB insert (#5).
+
+        ``items`` is a list of ``(listing_id, extra_dict_or_None)``.
+        """
+        if not items:
+            return
+        ids = [lid for lid, _extra in items]
         with self._lock:
-            self._json_ids.add(listing_id)
-            self._nocodb_ids.add(listing_id)
-            self._save_json()
-        self._nocodb_insert(listing_id, extra)
+            self._json_ids.update(ids)
+            self._nocodb_ids.update(ids)
+            self._save_json()  # single rewrite for the whole batch
+        self._nocodb_insert_many([self._payload(lid, extra) for lid, extra in items])
 
     def prime(self, listing_ids: Iterable[str]) -> None:
         """Mark a batch of ids as seen during the silent startup prime."""
@@ -163,8 +183,7 @@ class SeenStore:
             self._json_ids.update(ids)
             self._nocodb_ids.update(ids)
             self._save_json()
-        for lid in ids:
-            self._nocodb_insert(lid)
+        self._nocodb_insert_many([self._payload(lid) for lid in ids])
 
     def schema_check(self) -> bool:
         """D1: verify the NocoDB table is reachable and the id field exists."""

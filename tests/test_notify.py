@@ -166,6 +166,19 @@ def test_email_multipart_sent(monkeypatch):
     assert "text/plain" in payloads and "text/html" in payloads
 
 
+def test_send_alert_via_telegram():
+    cfg = make_config(telegram_token="t", telegram_chat_id="c")
+    sess = RecordingSession()
+    ok = Notifier(cfg, session=sess, sleep=lambda s: None).send_alert("3 cycles failed in a row")
+    assert ok is True
+    assert sess.posts[0]["url"].endswith("/sendMessage")
+    assert "cycles failed" in sess.posts[0]["data"]["text"]
+
+
+def test_send_alert_no_channels_returns_false():
+    assert Notifier(make_config(), sleep=lambda s: None).send_alert("x") is False
+
+
 def test_summary_sent_via_telegram():
     cfg = make_config(telegram_token="t", telegram_chat_id="c")
     sess = RecordingSession()

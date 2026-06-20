@@ -149,6 +149,9 @@ class Config:
     # Health
     health_path: str
     healthcheck_port: Optional[int]
+    health_stale_after_min: int          # 0 = auto (2× poll interval)
+    failure_alert_threshold: int
+    alert_on_failures: bool
 
     # Run-logging (Epic E)
     run_log_enabled: bool
@@ -169,6 +172,12 @@ class Config:
     @property
     def nocodb_enabled(self) -> bool:
         return bool(self.nocodb_url and self.nocodb_token and self.nocodb_table_id)
+
+    @property
+    def health_stale_after_s(self) -> int:
+        """Seconds with no completed cycle before /health reports unhealthy."""
+        minutes = self.health_stale_after_min or (2 * self.poll_interval_min)
+        return minutes * 60
 
     @property
     def searches_from_nocodb(self) -> bool:
@@ -216,6 +225,9 @@ def load_config() -> Config:
         max_notify_per_cycle=_env_int("MAX_NOTIFY_PER_CYCLE", 15),
         health_path=_env("HEALTH_PATH", "/data/health.json"),
         healthcheck_port=(int(_env("HEALTHCHECK_PORT")) if _env("HEALTHCHECK_PORT") else None),
+        health_stale_after_min=_env_int("HEALTH_STALE_AFTER_MIN", 0),
+        failure_alert_threshold=_env_int("FAILURE_ALERT_THRESHOLD", 3),
+        alert_on_failures=_env_bool("ALERT_ON_REPEATED_FAILURES", True),
         run_log_enabled=_env_bool("RUN_LOG_ENABLED", True),
         nocodb_runs_table_id=_env("NOCODB_RUNS_TABLE_ID"),
         nocodb_run_events_table_id=_env("NOCODB_RUN_EVENTS_TABLE_ID"),

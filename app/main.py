@@ -14,6 +14,7 @@ import random
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import requests
@@ -136,6 +137,14 @@ def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: Lis
     return refiltered
 
 
+@dataclass
+class CycleState:
+    """Cross-cycle health state, owned by the poll loop (#6/#7)."""
+    consecutive_failures: int = 0
+    last_success_at: Optional[str] = None
+    alerted: bool = False
+
+
 def run_cycle(
     cfg: Config,
     store: SeenStore,
@@ -146,13 +155,16 @@ def run_cycle(
     prime: bool,
     trigger: Optional[str] = None,
     search_provider: Optional[SearchProvider] = None,
+    state: Optional["CycleState"] = None,
 ) -> dict:
     """Execute one poll cycle. Returns the heartbeat stats dict.
 
     ``trigger`` overrides the recorded trigger; when omitted it is derived as
     ``startup_prime`` on the priming run and ``scheduled`` thereafter.
     ``search_provider`` supplies the active searches (NocoDB table or env vars).
+    ``state`` carries cross-cycle health info (consecutive failures, last success).
     """
+    state = state if state is not None else CycleState()
     run = runlogger.start(trigger=trigger or ("startup_prime" if prime else "scheduled"))
     provider = search_provider or SearchProvider(cfg, session)
     notified = 0
@@ -207,9 +219,18 @@ def run_cycle(
         notified=notified,
     )
 
+    # Cross-cycle failure tracking (#6/#7): only a fully failed cycle counts.
+    if record.status == "failed":
+        state.consecutive_failures += 1
+    else:
+        state.consecutive_failures = 0
+        state.last_success_at = record.finished_at
+
     stats = {
         "status": record.status,
         "last_cycle": record.finished_at,
+        "last_success_at": state.last_success_at,
+        "consecutive_failures": state.consecutive_failures,
         "duration_ms": record.duration_ms,
         "sources_polled": polled,
         "fetched": fetched_count,
@@ -217,14 +238,39 @@ def run_cycle(
         "new_count": new_count,
         "notified": notified,
         "errors": record.errors,
+        # Freshness metadata the /health handler uses to decide 200 vs 503 (#6).
+        "last_cycle_epoch": time.time(),
+        "stale_after_s": cfg.health_stale_after_s,
+        "fail_threshold": cfg.failure_alert_threshold,
     }
     # A4: one greppable key=value summary line.
     log.info(
-        "cycle_complete sources_polled=%d fetched=%d filtered=%d new=%d notified=%d errors=%d status=%s duration_ms=%s",
-        polled, fetched_count, filtered_count, new_count, notified, record.errors, record.status, record.duration_ms,
+        "cycle_complete sources_polled=%d fetched=%d filtered=%d new=%d notified=%d errors=%d "
+        "status=%s consecutive_failures=%d duration_ms=%s",
+        polled, fetched_count, filtered_count, new_count, notified, record.errors,
+        record.status, state.consecutive_failures, record.duration_ms,
     )
     write_health(cfg.health_path, stats)
+    _maybe_alert(cfg, notifier, state)
     return stats
+
+
+def _maybe_alert(cfg: Config, notifier: Notifier, state: CycleState) -> None:
+    """Fire one alert per sustained outage, and a recovery note (#7). Never raises."""
+    if not cfg.alert_on_failures:
+        return
+    try:
+        if state.consecutive_failures >= cfg.failure_alert_threshold and not state.alerted:
+            state.alerted = True
+            notifier.send_alert(
+                f"⚠️ flatwatch: {state.consecutive_failures} cycles failed in a row — "
+                f"check sources/logs."
+            )
+        elif state.consecutive_failures == 0 and state.alerted:
+            state.alerted = False
+            notifier.send_alert("✅ flatwatch: recovered, cycles succeeding again.")
+    except Exception as exc:  # alerting is observational, never load-bearing
+        log.warning("Failure-alert send error (ignored): %s", exc)
 
 
 # A listing is only marked seen once it's actually delivered. If every configured
@@ -234,15 +280,17 @@ MAX_NOTIFY_ATTEMPTS = 5
 _NOTIFY_ATTEMPTS: dict = {}
 
 
-def _settle(listing: Listing, delivered: bool, store: SeenStore, run: Run, *, note: str) -> bool:
-    """Mark a listing seen iff delivered (#1); else retry next cycle, bounded.
+def _settle(listing: Listing, delivered: bool, run: Run, persist: List[Listing], *, note: str) -> bool:
+    """Decide a listing's fate after a notify attempt (#1). Returns delivered.
 
-    Returns True when the listing was delivered (and counted as notified).
+    Appends to ``persist`` (the batch to mark seen, flushed once by the caller)
+    when delivered, or when the bounded retry budget is exhausted. Otherwise the
+    listing is left unseen so the next cycle retries it.
     """
     lid = listing.listing_id
     if delivered:
         _NOTIFY_ATTEMPTS.pop(lid, None)
-        store.mark_seen(lid, extra=_seen_extra(listing))
+        persist.append(listing)
         run.event("notify_item", message=note, source=listing.source)
         return True
 
@@ -250,7 +298,7 @@ def _settle(listing: Listing, delivered: bool, store: SeenStore, run: Run, *, no
     _NOTIFY_ATTEMPTS[lid] = attempts
     if attempts >= MAX_NOTIFY_ATTEMPTS:
         _NOTIFY_ATTEMPTS.pop(lid, None)
-        store.mark_seen(lid, extra=_seen_extra(listing))
+        persist.append(listing)
         log.warning("Giving up on %s after %d failed notify attempts; marking seen.", lid, attempts)
         run.event("notify_item", level="error", message=f"{note}; gave up after {attempts} attempts", source=listing.source)
     else:
@@ -272,19 +320,25 @@ def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new
     individual = new_listings[:cap]
     overflow = new_listings[cap:]
     notified = 0
+    persist: List[Listing] = []
 
     for listing in individual:
         result = notifier.notify(listing)
         delivered = result.any_sent or not channels
         note = f"telegram={result.telegram_ok} email={result.email_ok} ha={result.ha_ok}"
-        if _settle(listing, delivered, store, run, note=note):
+        if _settle(listing, delivered, run, persist, note=note):
             notified += 1
 
     if overflow:
         sent = notifier.send_summary(overflow)
         delivered = sent or not channels
         for listing in overflow:
-            _settle(listing, delivered, store, run, note=f"summary({len(overflow)})")
+            _settle(listing, delivered, run, persist, note=f"summary({len(overflow)})")
+
+    # #4/#5: one JSON write + one bulk NocoDB insert for the whole batch.
+    if persist:
+        store.mark_seen_many([(l.listing_id, _seen_extra(l)) for l in persist])
+        run.event("persist", message="marked seen", count=len(persist))
 
     run.event("notify_done", count=notified)
     return notified
@@ -334,11 +388,12 @@ def main() -> int:
 
     first = True
     manual = False
+    state = CycleState()
     while not _STOP:
         try:
             trigger = "manual" if manual else None
             run_cycle(cfg, store, notifier, runlogger, session,
-                      prime=first, trigger=trigger, search_provider=search_provider)
+                      prime=first, trigger=trigger, search_provider=search_provider, state=state)
         except Exception:  # ultimate backstop — the loop must never die
             log.exception("Unexpected top-level cycle error; continuing.")
         first = False

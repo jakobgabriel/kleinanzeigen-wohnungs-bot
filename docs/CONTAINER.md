@@ -231,6 +231,9 @@ non-fatal.
 |---|---|---|
 | `HEALTH_PATH` | `/data/health.json` | Heartbeat file path. |
 | `HEALTHCHECK_PORT` | — (compose sets `8080`) | When set, serves `GET /health`. Unset disables the HTTP server (file still written). |
+| `HEALTH_STALE_AFTER_MIN` | `0` (auto = 2× poll interval) | `/health` returns 503 if no cycle completes within this window. |
+| `FAILURE_ALERT_THRESHOLD` | `3` | Consecutive failed cycles before `/health` is 503 and an alert is sent. |
+| `ALERT_ON_REPEATED_FAILURES` | `true` | Send a Telegram/email alert on a sustained outage and on recovery. |
 
 ### Run-logging
 
@@ -287,10 +290,13 @@ inbound connectivity is needed for the core function.
 **Inbound** (optional): when `HEALTHCHECK_PORT` is set the container serves:
 
 ```
-GET /health   →   200 application/json
+GET /health   →   200 (healthy) | 503 (alive but failing) application/json
 {
   "status": "success",          // success | partial | failed | starting
+  "healthy": true,              // false → HTTP 503
   "last_cycle": "2026-06-20T20:29:24.475911+00:00",
+  "last_success_at": "2026-06-20T20:29:24.475911+00:00",
+  "consecutive_failures": 0,
   "duration_ms": 6,
   "sources_polled": 2,
   "fetched": 37,
@@ -300,6 +306,15 @@ GET /health   →   200 application/json
   "errors": 0
 }
 ```
+
+The endpoint returns **503** (not just 200) when the service is *alive but
+failing* — either no cycle has completed within `HEALTH_STALE_AFTER_MIN` (a wedged
+or stuck loop) or `consecutive_failures` has reached `FAILURE_ALERT_THRESHOLD`
+(e.g. selectors drifted, all sources blocked). This is what makes Docker's
+HEALTHCHECK and external monitors able to catch a silently-failing container,
+rather than seeing a permanent green. On crossing the failure threshold the
+service also sends one alert (and a recovery note) if
+`ALERT_ON_REPEATED_FAILURES` is on.
 
 `GET /health`, `/healthz`, and `/` all return the snapshot; anything else is 404.
 The container's `HEALTHCHECK` curls this every 5 minutes, so `docker ps` shows

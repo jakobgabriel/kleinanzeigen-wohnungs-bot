@@ -114,7 +114,9 @@ the annotated list. Highlights:
 | `SMTP_*` / `EMAIL_FROM` / `EMAIL_TO` | — | Email channel. |
 | `HA_WEBHOOK_URL` | — | Optional Home Assistant webhook. |
 | `MAX_NOTIFY_PER_CYCLE` | `15` | Cap before batching into a summary message. |
-| `HEALTHCHECK_PORT` | `8080` | `GET /health` endpoint; unset disables it. |
+| `HEALTHCHECK_PORT` | `8080` | `GET /health` endpoint (200 healthy / 503 failing); unset disables it. |
+| `FAILURE_ALERT_THRESHOLD` | `3` | Consecutive failed cycles before `/health` is 503 + an alert fires. |
+| `ALERT_ON_REPEATED_FAILURES` | `true` | Alert on sustained outage + recovery. |
 | `RUN_LOG_ENABLED` | `true` | Toggle run-logging entirely. |
 | `NOCODB_RUNS_TABLE_ID` / `NOCODB_RUN_EVENTS_TABLE_ID` | — | Run-log tables. |
 | `RUN_LOG_RETENTION_DAYS` | `30` | Prune older runs on startup; `0` disables. |
@@ -248,11 +250,16 @@ docker kill -s USR1 flatwatch          # or: kill -USR1 <pid>
 
 After every cycle a heartbeat is written to `HEALTH_PATH` (`/data/health.json`)
 with the last-cycle stats. When `HEALTHCHECK_PORT` is set, `GET /health` returns
-`200` + JSON `{status, last_cycle, new_count, ...}`; the container `HEALTHCHECK`
-uses it. Each completed cycle also logs one greppable summary line:
+JSON `{status, healthy, last_cycle, last_success_at, consecutive_failures, ...}`;
+the container `HEALTHCHECK` uses it. It returns **200 when healthy and 503 when
+alive-but-failing** — no completed cycle within `HEALTH_STALE_AFTER_MIN`, or
+`consecutive_failures` ≥ `FAILURE_ALERT_THRESHOLD` — so a wedged or
+silently-failing container is actually caught. On a sustained outage one alert
+(and a recovery note) is sent if `ALERT_ON_REPEATED_FAILURES` is on. Each
+completed cycle also logs one greppable summary line:
 
 ```
-cycle_complete sources_polled=2 fetched=37 filtered=9 new=1 notified=1 errors=0 status=success duration_ms=4213
+cycle_complete sources_polled=2 fetched=9 filtered=9 new=1 notified=1 errors=0 status=success consecutive_failures=0 duration_ms=4213
 ```
 
 ---
