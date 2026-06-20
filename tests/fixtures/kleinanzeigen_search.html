@@ -1,0 +1,110 @@
+<!--
+  Representative Kleinanzeigen search-results markup, trimmed to the structure
+  the parser depends on. Mirrors the live site's article.aditem cards so that
+  KA_*_SELECTOR constants in app/sources.py are exercised against real shapes.
+  Card 1: complete. Card 2: missing price + rooms (degrades to None).
+  Card 3: missing sqm tag. Card 4: no thumbnail.
+-->
+<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="utf-8"><title>Wohnung mieten</title></head>
+<body>
+<ul id="srchrslt-adtable">
+  <li class="ad-listitem">
+    <article class="aditem" data-adid="2901234567" data-href="/s-anzeige/schoene-3-zimmer-wohnung/2901234567-203-1234">
+      <div class="aditem-image">
+        <a href="/s-anzeige/schoene-3-zimmer-wohnung/2901234567-203-1234">
+          <img src="https://img.kleinanzeigen.de/api/v1/prod-ads/images/aa/abc.jpg?rule=$_2.JPG" alt="">
+        </a>
+      </div>
+      <div class="aditem-main">
+        <div class="aditem-main--top">
+          <div class="aditem-main--top--left">10115 Berlin Mitte</div>
+        </div>
+        <div class="aditem-main--middle">
+          <h2 class="text-module-begin">
+            <a class="ellipsis" href="/s-anzeige/schoene-3-zimmer-wohnung/2901234567-203-1234">Schöne 3-Zimmer-Wohnung mit Balkon</a>
+          </h2>
+          <p class="aditem-main--middle--description">Helle Altbauwohnung, frisch saniert, Einbauküche vorhanden.</p>
+          <p class="aditem-main--middle--price-shipping--price">1.250,00 €</p>
+        </div>
+        <div class="aditem-main--bottom">
+          <span class="simpletag">3 Zimmer</span>
+          <span class="simpletag">82 m²</span>
+        </div>
+      </div>
+    </article>
+  </li>
+
+  <li class="ad-listitem">
+    <article class="aditem" data-adid="2907654321" data-href="/s-anzeige/wg-zimmer/2907654321-203-9876">
+      <div class="aditem-image">
+        <a href="/s-anzeige/wg-zimmer/2907654321-203-9876">
+          <img src="https://img.kleinanzeigen.de/api/v1/prod-ads/images/bb/def.jpg?rule=$_2.JPG" alt="">
+        </a>
+      </div>
+      <div class="aditem-main">
+        <div class="aditem-main--top">
+          <div class="aditem-main--top--left">80331 München</div>
+        </div>
+        <div class="aditem-main--middle">
+          <h2 class="text-module-begin">
+            <a class="ellipsis" href="/s-anzeige/wg-zimmer/2907654321-203-9876">Gemütliches WG-Zimmer zentral</a>
+          </h2>
+          <p class="aditem-main--middle--description">Provisionsfrei, ab sofort verfügbar.</p>
+        </div>
+        <div class="aditem-main--bottom">
+          <span class="simpletag">45 m²</span>
+        </div>
+      </div>
+    </article>
+  </li>
+
+  <li class="ad-listitem">
+    <article class="aditem" data-adid="2905555555" data-href="/s-anzeige/2-zimmer-tausch/2905555555-203-5555">
+      <div class="aditem-image">
+        <a href="/s-anzeige/2-zimmer-tausch/2905555555-203-5555">
+          <img src="https://img.kleinanzeigen.de/api/v1/prod-ads/images/cc/ghi.jpg?rule=$_2.JPG" alt="">
+        </a>
+      </div>
+      <div class="aditem-main">
+        <div class="aditem-main--top">
+          <div class="aditem-main--top--left">20095 Hamburg</div>
+        </div>
+        <div class="aditem-main--middle">
+          <h2 class="text-module-begin">
+            <a class="ellipsis" href="/s-anzeige/2-zimmer-tausch/2905555555-203-5555">2-Zimmer-Wohnung Tauschangebot</a>
+          </h2>
+          <p class="aditem-main--middle--description">Tausch gegen größere Wohnung gesucht.</p>
+          <p class="aditem-main--middle--price-shipping--price">890,00 €</p>
+        </div>
+        <div class="aditem-main--bottom">
+          <span class="simpletag">2,5 Zimmer</span>
+        </div>
+      </div>
+    </article>
+  </li>
+
+  <li class="ad-listitem">
+    <article class="aditem" data-adid="2908888888" data-href="/s-anzeige/1-zimmer-apartment/2908888888-203-8888">
+      <div class="aditem-main">
+        <div class="aditem-main--top">
+          <div class="aditem-main--top--left">50667 Köln</div>
+        </div>
+        <div class="aditem-main--middle">
+          <h2 class="text-module-begin">
+            <a class="ellipsis" href="/s-anzeige/1-zimmer-apartment/2908888888-203-8888">1-Zimmer-Apartment möbliert</a>
+          </h2>
+          <p class="aditem-main--middle--description">Vollmöbliert, ideal für Pendler.</p>
+          <p class="aditem-main--middle--price-shipping--price">650,00 €</p>
+        </div>
+        <div class="aditem-main--bottom">
+          <span class="simpletag">1 Zimmer</span>
+          <span class="simpletag">32 m²</span>
+        </div>
+      </div>
+    </article>
+  </li>
+</ul>
+</body>
+</html>
