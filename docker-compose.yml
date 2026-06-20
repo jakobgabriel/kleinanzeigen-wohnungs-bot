@@ -1,0 +1,25 @@
+# flatwatch — deploy on Synology/Portainer.
+#   docker compose up --build -d
+# Configuration is read from a sibling .env file (copy .env.example).
+services:
+  flatwatch:
+    build: .
+    image: flatwatch:latest
+    container_name: flatwatch
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Default the health port inside the container; HEALTHCHECK uses it too.
+      HEALTHCHECK_PORT: "8080"
+      JSON_STORE_PATH: "/data/seen.json"
+      HEALTH_PATH: "/data/health.json"
+      RUN_LOG_JSONL_PATH: "/data/runs.jsonl"
+    volumes:
+      - flatwatch-data:/data
+    ports:
+      # Expose the health endpoint on the host (optional).
+      - "8080:8080"
+
+volumes:
+  flatwatch-data:

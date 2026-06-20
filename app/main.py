@@ -1,0 +1,240 @@
+"""flatwatch entry point: the poll loop.
+
+Run with ``python -m app.main``.  Each cycle fetches every source, filters
+against the criteria, dedups against NocoDB ∪ JSON, notifies new matches, and
+persists them — instrumented end-to-end with run-logging (Epic E).  The first
+cycle primes silently (no backlog spam).  One bad cycle never kills the loop:
+catch-log-continue.
+"""
+
+from __future__ import annotations
+
+import logging
+import random
+import signal
+import sys
+import time
+from typing import List, Tuple
+
+import requests
+
+from .config import Config, load_config
+from .filters import matches
+from .health import start_health_server, write_health
+from .models import Listing
+from .notify import Notifier
+from .runlog import Run, RunLogger
+from . import sources
+from .store import SeenStore
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("flatwatch.main")
+
+_STOP = False
+
+
+def _handle_signal(signum, _frame):
+    global _STOP
+    log.info("Received signal %s — finishing current cycle then exiting.", signum)
+    _STOP = True
+
+
+def fetch_all(cfg: Config, session: requests.Session, run: Run) -> Tuple[List[Listing], int, int]:
+    """Fetch every configured source. Returns (listings, sources_polled, n_errors)."""
+    run.event("fetch_start", message=f"{len(cfg.ka_urls)} KA + {len(cfg.rss_urls)} RSS")
+    listings: List[Listing] = []
+    polled = 0
+
+    jobs = [("kleinanzeigen", url, sources.fetch_kleinanzeigen) for url in cfg.ka_urls]
+    jobs += [("rss", url, sources.fetch_rss) for url in cfg.rss_urls]
+
+    for source_name, url, fetcher in jobs:
+        polled += 1
+        try:
+            found = fetcher(
+                url,
+                user_agent=cfg.user_agent,
+                timeout=cfg.http_timeout_s,
+                max_retries=cfg.max_retries,
+                session=session,
+            )
+            listings.extend(found)
+            run.event("fetch_source", message="ok", source=url, count=len(found))
+        except sources.FetchError as exc:
+            run.source_failed(url, str(exc), blocked=getattr(exc, "blocked", False))
+            if getattr(exc, "blocked", False):
+                log.warning("Source blocked (403): %s", url)
+            else:
+                log.error("Source failed: %s — %s", url, exc)
+        except Exception as exc:  # never let one source kill the cycle
+            run.source_failed(url, repr(exc))
+            log.exception("Unexpected error fetching %s", url)
+        sources.polite_pause(cfg.per_request_delay_s, cfg.request_jitter_s)
+
+    run.event("fetch_done", count=len(listings))
+    return listings, polled, len(run._failed_sources)
+
+
+def run_cycle(
+    cfg: Config,
+    store: SeenStore,
+    notifier: Notifier,
+    runlogger: RunLogger,
+    session: requests.Session,
+    *,
+    prime: bool,
+) -> dict:
+    """Execute one poll cycle. Returns the heartbeat stats dict."""
+    run = runlogger.start(trigger="startup_prime" if prime else "scheduled")
+    notified = 0
+    new_count = 0
+    filtered_count = 0
+    fetched_count = 0
+    polled = 0
+    status = None
+
+    try:
+        listings, polled, _ = fetch_all(cfg, session, run)
+        fetched_count = len(listings)
+
+        # Filter
+        candidates = [l for l in listings if matches(l, cfg.criteria)]
+        filtered_count = len(candidates)
+        run.event("filter", message="candidates kept", count=filtered_count)
+
+        # Dedup
+        new_listings = [l for l in candidates if store.is_new(l.listing_id)]
+        new_count = len(new_listings)
+        run.event("dedup", message=f"{new_count} new of {filtered_count} candidates", count=new_count)
+
+        if prime:
+            # Silent prime: mark everything seen, notify nothing.
+            store.prime([l.listing_id for l in new_listings])
+            run.event("persist", message="silent prime", count=new_count)
+        else:
+            notified = _notify_new(cfg, store, notifier, run, new_listings)
+
+    except Exception as exc:  # catch-log-continue; record + classify as failed
+        log.exception("Cycle failed")
+        run.capture_error("run_cycle", exc)
+        status = "failed"
+
+    record = run.finish(
+        status=status,
+        sources_polled=polled,
+        fetched=fetched_count,
+        filtered=filtered_count,
+        new=new_count,
+        notified=notified,
+    )
+
+    stats = {
+        "status": record.status,
+        "last_cycle": record.finished_at,
+        "duration_ms": record.duration_ms,
+        "sources_polled": polled,
+        "fetched": fetched_count,
+        "filtered": filtered_count,
+        "new_count": new_count,
+        "notified": notified,
+        "errors": record.errors,
+    }
+    # A4: one greppable key=value summary line.
+    log.info(
+        "cycle_complete sources_polled=%d fetched=%d filtered=%d new=%d notified=%d errors=%d status=%s duration_ms=%s",
+        polled, fetched_count, filtered_count, new_count, notified, record.errors, record.status, record.duration_ms,
+    )
+    write_health(cfg.health_path, stats)
+    return stats
+
+
+def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new_listings: List[Listing]) -> int:
+    """Notify new listings with a batching guard (C2). Returns count notified."""
+    if not new_listings:
+        run.event("notify_start", count=0)
+        run.event("notify_done", count=0)
+        return 0
+
+    run.event("notify_start", count=len(new_listings))
+    cap = cfg.max_notify_per_cycle
+    individual = new_listings[:cap]
+    overflow = new_listings[cap:]
+    notified = 0
+
+    for listing in individual:
+        result = notifier.notify(listing)
+        if result.any_sent or not (cfg.telegram_enabled or cfg.email_enabled or cfg.ha_webhook_url):
+            notified += 1
+        level = "warning" if result.any_failed else "info"
+        run.event(
+            "notify_item",
+            level=level,
+            message=f"telegram={result.telegram_ok} email={result.email_ok} ha={result.ha_ok}",
+            source=listing.source,
+        )
+        store.mark_seen(listing.listing_id, extra=_seen_extra(listing))
+
+    if overflow:
+        notifier.send_summary(overflow)
+        for listing in overflow:
+            store.mark_seen(listing.listing_id, extra=_seen_extra(listing))
+        run.event("notify_item", message=f"summary for {len(overflow)} overflow listings", count=len(overflow))
+
+    run.event("notify_done", count=notified)
+    run.event("persist", message="marked seen", count=len(new_listings))
+    return notified
+
+
+def _seen_extra(listing: Listing) -> dict:
+    return {"title": listing.title, "url": listing.url, "source": listing.source}
+
+
+def main() -> int:
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    cfg = load_config()
+    session = requests.Session()
+    store = SeenStore(cfg, session=session)
+    notifier = Notifier(cfg, session=session)
+    runlogger = RunLogger(cfg, session=session)
+
+    store.schema_check()
+    runlogger.prune()  # E4: prune old run-logs on startup
+    start_health_server(cfg.healthcheck_port)
+
+    log.info(
+        "flatwatch starting: %d KA + %d RSS sources, poll every %d min.",
+        len(cfg.ka_urls), len(cfg.rss_urls), cfg.poll_interval_min,
+    )
+
+    first = True
+    while not _STOP:
+        try:
+            run_cycle(cfg, store, notifier, runlogger, session, prime=first)
+        except Exception:  # ultimate backstop — the loop must never die
+            log.exception("Unexpected top-level cycle error; continuing.")
+        first = False
+
+        if _STOP:
+            break
+        _sleep_interval(cfg.poll_interval_min)
+
+    log.info("flatwatch stopped.")
+    return 0
+
+
+def _sleep_interval(poll_interval_min: int) -> None:
+    """Sleep the poll interval in 1s slices so signals interrupt promptly."""
+    total = poll_interval_min * 60 + random.uniform(0, 30)  # small jitter
+    waited = 0.0
+    while waited < total and not _STOP:
+        time.sleep(1)
+        waited += 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
