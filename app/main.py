@@ -18,14 +18,18 @@ from typing import List, Optional, Tuple
 
 import requests
 
-from .config import Config, load_config
+from .config import Config, Criteria, load_config
 from .filters import matches
 from .health import start_health_server, write_health
 from .models import Listing
 from .notify import Notifier
 from .runlog import Run, RunLogger
+from .searches import Search, SearchProvider
 from . import sources
 from .store import SeenStore
+
+# A fetched listing paired with the criteria of the search it came from.
+Pair = Tuple[Listing, Criteria]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,52 +54,56 @@ def _handle_trigger(signum, _frame):
     _TRIGGER_NOW = True
 
 
-def fetch_all(cfg: Config, session: requests.Session, run: Run) -> Tuple[List[Listing], int, int]:
-    """Fetch every configured source. Returns (listings, sources_polled, n_errors)."""
-    run.event("fetch_start", message=f"{len(cfg.ka_urls)} KA + {len(cfg.rss_urls)} RSS")
-    listings: List[Listing] = []
+def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, run: Run) -> Tuple[List[Pair], int]:
+    """Fetch every active search. Returns ([(listing, search criteria)], polled).
+
+    Each listing is paired with the criteria of the search it came from, so
+    per-search bounds (from the NocoDB searches table) are applied downstream.
+    """
+    ka = sum(1 for s in searches if s.source_type == "kleinanzeigen")
+    rss = len(searches) - ka
+    run.event("fetch_start", message=f"{ka} KA + {rss} RSS searches")
+    pairs: List[Pair] = []
     polled = 0
 
-    jobs = [("kleinanzeigen", url, sources.fetch_kleinanzeigen) for url in cfg.ka_urls]
-    jobs += [("rss", url, sources.fetch_rss) for url in cfg.rss_urls]
-
-    for source_name, url, fetcher in jobs:
+    for search in searches:
         polled += 1
+        fetcher = sources.fetch_kleinanzeigen if search.source_type == "kleinanzeigen" else sources.fetch_rss
         try:
             found = fetcher(
-                url,
+                search.url,
                 user_agent=cfg.user_agent,
                 timeout=cfg.http_timeout_s,
                 max_retries=cfg.max_retries,
                 session=session,
             )
-            listings.extend(found)
-            run.event("fetch_source", message="ok", source=url, count=len(found))
+            pairs.extend((listing, search.criteria) for listing in found)
+            run.event("fetch_source", message="ok", source=search.url, count=len(found))
         except sources.FetchError as exc:
-            run.source_failed(url, str(exc), blocked=getattr(exc, "blocked", False))
+            run.source_failed(search.url, str(exc), blocked=getattr(exc, "blocked", False))
             if getattr(exc, "blocked", False):
-                log.warning("Source blocked (403): %s", url)
+                log.warning("Source blocked (403): %s", search.url)
             else:
-                log.error("Source failed: %s — %s", url, exc)
+                log.error("Source failed: %s — %s", search.url, exc)
         except Exception as exc:  # never let one source kill the cycle
-            run.source_failed(url, repr(exc))
-            log.exception("Unexpected error fetching %s", url)
+            run.source_failed(search.url, repr(exc))
+            log.exception("Unexpected error fetching %s", search.url)
         sources.polite_pause(cfg.per_request_delay_s, cfg.request_jitter_s)
 
-    run.event("fetch_done", count=len(listings))
-    return listings, polled, len(run._failed_sources)
+    run.event("fetch_done", count=len(pairs))
+    return pairs, polled
 
 
-def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_listings: List[Listing]) -> List[Listing]:
+def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: List[Pair]) -> List[Pair]:
     """Enrich Kleinanzeigen listings missing price/rooms/sqm, then re-filter (B2).
 
     Only new (not-yet-seen) listings reach here, so a detail page is never
     fetched for an already-seen id. Each detail page is fetched at most once,
-    spaced by PER_REQUEST_DELAY_S. Listings that fall out of criteria once their
-    real values are known are dropped here.
+    spaced by PER_REQUEST_DELAY_S. Listings that fall out of their search's
+    criteria once their real values are known are dropped here.
     """
     enriched_count = 0
-    for listing in new_listings:
+    for listing, _criteria in new_pairs:
         if listing.source != "kleinanzeigen" or not listing._missing:
             continue
         try:
@@ -116,7 +124,7 @@ def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_listings: 
             log.warning("Detail enrichment failed for %s: %s", listing.url, exc)
         sources.polite_pause(cfg.per_request_delay_s, cfg.request_jitter_s)
 
-    refiltered = [l for l in new_listings if matches(l, cfg.criteria)]
+    refiltered = [(l, c) for (l, c) in new_pairs if matches(l, c)]
     run.event(
         "filter",
         message="re-filter after enrichment",
@@ -137,13 +145,16 @@ def run_cycle(
     *,
     prime: bool,
     trigger: Optional[str] = None,
+    search_provider: Optional[SearchProvider] = None,
 ) -> dict:
     """Execute one poll cycle. Returns the heartbeat stats dict.
 
     ``trigger`` overrides the recorded trigger; when omitted it is derived as
     ``startup_prime`` on the priming run and ``scheduled`` thereafter.
+    ``search_provider`` supplies the active searches (NocoDB table or env vars).
     """
     run = runlogger.start(trigger=trigger or ("startup_prime" if prime else "scheduled"))
+    provider = search_provider or SearchProvider(cfg, session)
     notified = 0
     new_count = 0
     filtered_count = 0
@@ -152,22 +163,26 @@ def run_cycle(
     status = None
 
     try:
-        listings, polled, _ = fetch_all(cfg, session, run)
-        fetched_count = len(listings)
+        searches = provider.get_searches()
+        pairs, polled = fetch_all(cfg, searches, session, run)
+        fetched_count = len(pairs)
 
-        # Filter
-        candidates = [l for l in listings if matches(l, cfg.criteria)]
+        # Filter each listing against the criteria of its own search.
+        candidates = [(l, c) for (l, c) in pairs if matches(l, c)]
+        # Collapse listings matched by more than one overlapping search.
+        candidates = _dedup_pairs(candidates)
         filtered_count = len(candidates)
         run.event("filter", message="candidates kept", count=filtered_count)
 
-        # Dedup
-        new_listings = [l for l in candidates if store.is_new(l.listing_id)]
-        run.event("dedup", message=f"{len(new_listings)} new of {filtered_count} candidates", count=len(new_listings))
+        # Dedup against the seen-store
+        new_pairs = [(l, c) for (l, c) in candidates if store.is_new(l.listing_id)]
+        run.event("dedup", message=f"{len(new_pairs)} new of {filtered_count} candidates", count=len(new_pairs))
 
         # Detail-page enrichment (B2): fill missing fields on new listings only
         # (never refetches an already-seen id), then re-filter with real values.
-        if cfg.enrich_detail and new_listings:
-            new_listings = _enrich_new(cfg, session, run, new_listings)
+        if cfg.enrich_detail and new_pairs:
+            new_pairs = _enrich_new(cfg, session, run, new_pairs)
+        new_listings = [l for (l, _c) in new_pairs]
         new_count = len(new_listings)
 
         if prime:
@@ -248,6 +263,18 @@ def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new
     return notified
 
 
+def _dedup_pairs(pairs: List[Pair]) -> List[Pair]:
+    """Drop within-cycle duplicate listings (same id from overlapping searches)."""
+    seen = set()
+    out: List[Pair] = []
+    for listing, criteria in pairs:
+        if listing.listing_id in seen:
+            continue
+        seen.add(listing.listing_id)
+        out.append((listing, criteria))
+    return out
+
+
 def _seen_extra(listing: Listing) -> dict:
     return {"title": listing.title, "url": listing.url, "source": listing.source}
 
@@ -264,14 +291,18 @@ def main() -> int:
     store = SeenStore(cfg, session=session)
     notifier = Notifier(cfg, session=session)
     runlogger = RunLogger(cfg, session=session)
+    search_provider = SearchProvider(cfg, session=session)
 
     store.schema_check()
+    if cfg.searches_from_nocodb:
+        search_provider.schema_check()
     runlogger.prune()  # E4: prune old run-logs on startup
     start_health_server(cfg.healthcheck_port)
 
+    source = "NocoDB searches table" if cfg.searches_from_nocodb else "env vars"
     log.info(
-        "flatwatch starting: %d KA + %d RSS sources, poll every %d min.",
-        len(cfg.ka_urls), len(cfg.rss_urls), cfg.poll_interval_min,
+        "flatwatch starting: searches from %s, poll every %d min.",
+        source, cfg.poll_interval_min,
     )
 
     first = True
@@ -279,7 +310,8 @@ def main() -> int:
     while not _STOP:
         try:
             trigger = "manual" if manual else None
-            run_cycle(cfg, store, notifier, runlogger, session, prime=first, trigger=trigger)
+            run_cycle(cfg, store, notifier, runlogger, session,
+                      prime=first, trigger=trigger, search_provider=search_provider)
         except Exception:  # ultimate backstop — the loop must never die
             log.exception("Unexpected top-level cycle error; continuing.")
         first = False

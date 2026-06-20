@@ -30,6 +30,7 @@ def make_config(**overrides) -> Config:
         nocodb_token=None,
         nocodb_table_id=None,
         nocodb_id_field="listing_id",
+        nocodb_searches_table_id=None,
         telegram_token=None,
         telegram_chat_id=None,
         smtp_host=None,

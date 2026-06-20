@@ -68,6 +68,10 @@ KA_SEARCH_URLS=
 (Comma- or newline-separated.) This covers per-area searching without per-source
 rent overrides; the same `Criteria` is matched against listings from all URLs.
 
+For **different criteria per area** — or to edit searches without redeploying —
+use the [dynamic searches table](#table-dynamic-searches--nocodb_searches_table_id-optional)
+instead: each row carries its own URL *and* its own bounds.
+
 ### Detail-page enrichment (optional)
 
 Kleinanzeigen search cards sometimes omit the price, room count, or area. With
@@ -99,6 +103,7 @@ the annotated list. Highlights:
 | `POLL_INTERVAL_MIN` | `30` | Poll interval; clamped to a 30-minute floor. |
 | `HTTP_MAX_RETRIES` | `3` | Retries on 5xx/timeout (2s, 4s, 8s); 403 never retried. |
 | `NOCODB_URL` / `NOCODB_TOKEN` / `NOCODB_TABLE_ID` | — | Dedup store (falls back to JSON). |
+| `NOCODB_SEARCHES_TABLE_ID` | — | Optional: read searches live from NocoDB (falls back to env). |
 | `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | — | Telegram channel (both required). |
 | `SMTP_*` / `EMAIL_FROM` / `EMAIL_TO` | — | Email channel. |
 | `HA_WEBHOOK_URL` | — | Optional Home Assistant webhook. |
@@ -133,6 +138,31 @@ run-logging buffers to `runs.jsonl`.
 
 On startup flatwatch verifies this table is reachable and that the id field
 exists; on failure it logs an actionable WARNING and falls back to JSON.
+
+### Table: dynamic searches — `NOCODB_SEARCHES_TABLE_ID` (optional)
+
+Set `NOCODB_SEARCHES_TABLE_ID` to manage your searches **live in NocoDB** instead
+of in env vars. The table is read at the start of **every cycle**, so edits take
+effect on the next poll (≤ poll interval) with **no redeploy**. Each row is one
+search: a URL plus its own criteria; any blank criteria cell **inherits the
+global env default**. This replaces the need for `KA_SEARCH_URLS`/`RSS_URLS` (which
+remain the fallback).
+
+| Column | Type | Notes |
+|---|---|---|
+| `enabled` | Checkbox | Row is polled only when true (blank = true). |
+| `label` | SingleLineText | Friendly name (optional). |
+| `source_type` | SingleLineText | `kleinanzeigen` or `rss`; inferred from the URL if blank. |
+| `url` | URL / SingleLineText | The KA search URL or RSS feed URL (required). |
+| `min_rent` / `max_rent` | Number | Blank → inherit global `MIN_RENT`/`MAX_RENT`. |
+| `min_rooms` / `max_rooms` | Number | Blank → inherit global. |
+| `min_sqm` / `max_sqm` | Number | Blank → inherit global. |
+| `required_keywords` | SingleLineText | Comma-separated; blank → inherit global. |
+| `excluded_keywords` | SingleLineText | Comma-separated; blank → inherit global. |
+
+**Resilience:** if the table is unreachable, flatwatch reuses the last-known-good
+list it read; if there is none (or the table is empty / all-disabled) it falls
+back to the env-var searches. Reading searches never blocks a cycle.
 
 ### Table: `flatwatch_runs` — `NOCODB_RUNS_TABLE_ID`
 
@@ -243,6 +273,7 @@ app/
   models.py    Listing, German number parsing, stable_id
   sources.py   Kleinanzeigen scraper + RSS parser (retry/backoff, selector constants)
   filters.py   criteria matching (None never disqualifies)
+  searches.py  dynamic searches (URL + per-search criteria) from NocoDB, env fallback
   store.py     NocoDB + JSON union dedup
   notify.py    Telegram + email + Home Assistant, independent failure
   runlog.py    run-lifecycle logging → NocoDB (buffered, best-effort, JSONL fallback)

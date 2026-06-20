@@ -207,6 +207,60 @@ def test_trigger_manual_override(tmp_path, monkeypatch):
     assert cap["trigger"] == "manual"
 
 
+def test_per_search_criteria_filter_independently(tmp_path, monkeypatch):
+    """A NocoDB-style provider gives each search its own bounds (URL + criteria)."""
+    from app.config import Criteria
+    from app.searches import Search, SearchProvider
+
+    per_url = {
+        "https://ka/cheap": [_listing(1, price=950)],     # under that search's 1000 cap
+        "https://ka/lux": [_listing(2, price=1800)],       # under that search's 2000 cap
+    }
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", lambda u, **k: per_url[u])
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+
+    cfg, store, notifier, runlogger = _make(tmp_path, [], ka_urls=[], rss_urls=[])
+
+    class StubProvider(SearchProvider):
+        def get_searches(self):
+            return [
+                Search("https://ka/cheap", "kleinanzeigen", Criteria(max_rent=1000)),
+                Search("https://ka/lux", "kleinanzeigen", Criteria(max_rent=2000)),
+            ]
+
+    provider = StubProvider(cfg, DummySession())
+    notified = []
+    monkeypatch.setattr(notifier, "notify", lambda l: notified.append(l) or _Result())
+    stats = main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(),
+                               prime=False, search_provider=provider)
+    assert stats["sources_polled"] == 2
+    # Both pass — each under its own search's cap (the 1800 would fail a 1000 cap).
+    assert sorted(l.listing_id for l in notified) == ["kleinanzeigen:1", "kleinanzeigen:2"]
+
+
+def test_same_listing_from_two_searches_notifies_once(tmp_path, monkeypatch):
+    from app.config import Criteria
+    from app.searches import Search, SearchProvider
+
+    dup = _listing(1, price=900)
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", lambda u, **k: [dup])
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+    cfg, store, notifier, runlogger = _make(tmp_path, [], ka_urls=[], rss_urls=[])
+
+    class StubProvider(SearchProvider):
+        def get_searches(self):
+            return [
+                Search("https://ka/a", "kleinanzeigen", Criteria()),
+                Search("https://ka/b", "kleinanzeigen", Criteria()),
+            ]
+
+    notified = []
+    monkeypatch.setattr(notifier, "notify", lambda l: notified.append(l) or _Result())
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(),
+                       prime=False, search_provider=StubProvider(cfg, DummySession()))
+    assert [l.listing_id for l in notified] == ["kleinanzeigen:1"]  # deduped within cycle
+
+
 def test_sigusr1_sets_manual_trigger_and_sleep_wakes(monkeypatch):
     # Handler flips the flag; _sleep_interval returns promptly while it's set.
     monkeypatch.setattr(main_mod, "_TRIGGER_NOW", False)
