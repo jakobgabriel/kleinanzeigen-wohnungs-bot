@@ -3,6 +3,11 @@
 A listing is *new* only if its id is absent from ``NocoDB ∪ JSON``.  After
 notifying, the id is written to both.  NocoDB being unreachable degrades to the
 JSON file (logged, non-fatal) — correctness never depends on NocoDB being up.
+
+Reads are served from an **in-memory id set** loaded once (and kept current as
+new ids are marked), not a per-listing query: ``is_new`` never touches the
+network, so a slow/unreachable NocoDB can never turn a cycle into an
+N×timeout stall.
 """
 
 from __future__ import annotations
@@ -19,6 +24,9 @@ from .config import Config
 
 log = logging.getLogger("flatwatch.store")
 
+# Page size for the one-shot seen-id load (NocoDB caps page size around 1000).
+_NOCODB_PAGE = 1000
+
 
 class SeenStore:
     """Tracks which listing ids have already been notified."""
@@ -28,6 +36,9 @@ class SeenStore:
         self._session = session or requests.Session()
         self._lock = threading.Lock()
         self._json_ids: Set[str] = self._load_json()
+        # In-memory mirror of the NocoDB seen-ids, loaded once via begin_cycle().
+        self._nocodb_ids: Set[str] = set()
+        self._nocodb_loaded = False
         self._nocodb_ok = cfg.nocodb_enabled
 
     # ----- JSON fallback ---------------------------------------------------- #
@@ -62,24 +73,39 @@ class SeenStore:
         base = self.cfg.nocodb_url.rstrip("/")
         return f"{base}/api/v2/tables/{self.cfg.nocodb_table_id}/records"
 
-    def _nocodb_has(self, listing_id: str) -> Optional[bool]:
-        """True/False if NocoDB answered, None if NocoDB is unreachable."""
+    def _load_nocodb_ids(self) -> None:
+        """Load the full set of seen ids from NocoDB into memory (one paginated read).
+
+        On success the cache is authoritative for the process; on failure we keep
+        whatever we had and degrade to JSON for this cycle (a single failure, not
+        one per listing). Retried by :meth:`begin_cycle` until it succeeds.
+        """
         if not self.cfg.nocodb_enabled:
-            return None
+            return
         field = self.cfg.nocodb_id_field
+        ids: Set[str] = set()
+        offset = 0
         try:
-            resp = self._session.get(
-                self._nocodb_url(),
-                headers=self._nocodb_headers(),
-                params={"where": f"({field},eq,{listing_id})", "limit": 1},
-                timeout=self.cfg.http_timeout_s,
-            )
-            resp.raise_for_status()
-            rows = resp.json().get("list", [])
-            return len(rows) > 0
+            while True:
+                resp = self._session.get(
+                    self._nocodb_url(),
+                    headers=self._nocodb_headers(),
+                    params={"limit": _NOCODB_PAGE, "offset": offset, "fields": field},
+                    timeout=self.cfg.http_timeout_s,
+                )
+                resp.raise_for_status()
+                rows = resp.json().get("list", [])
+                ids.update(r.get(field) for r in rows if r.get(field))
+                if len(rows) < _NOCODB_PAGE:
+                    break
+                offset += _NOCODB_PAGE
+            with self._lock:
+                self._nocodb_ids = ids
+            self._nocodb_loaded = True
+            self._nocodb_ok = True
+            log.info("Loaded %d seen id(s) from NocoDB.", len(ids))
         except (requests.RequestException, ValueError) as exc:
             self._note_nocodb_down(exc)
-            return None
 
     def _nocodb_insert(self, listing_id: str, extra: Optional[dict] = None) -> bool:
         if not self.cfg.nocodb_enabled:
@@ -106,20 +132,27 @@ class SeenStore:
         self._nocodb_ok = False
 
     # ----- Public API ------------------------------------------------------- #
+    def begin_cycle(self) -> None:
+        """Ensure the NocoDB seen-id cache is loaded; retry if a prior load failed.
+
+        Called once at the start of each cycle. After the first successful load it
+        is a no-op (steady-state reads cost no network), but if NocoDB was down it
+        keeps retrying so the cache re-syncs once NocoDB returns.
+        """
+        if not self.cfg.nocodb_enabled or self._nocodb_loaded:
+            return
+        self._load_nocodb_ids()
+
     def is_new(self, listing_id: str) -> bool:
-        """A listing is new only if absent from NocoDB ∪ JSON."""
+        """A listing is new only if absent from NocoDB ∪ JSON (in-memory, no I/O)."""
         with self._lock:
-            if listing_id in self._json_ids:
-                return False
-        in_nocodb = self._nocodb_has(listing_id)
-        if in_nocodb:
-            return False
-        return True
+            return listing_id not in self._json_ids and listing_id not in self._nocodb_ids
 
     def mark_seen(self, listing_id: str, extra: Optional[dict] = None) -> None:
         """Persist a listing id to both stores (NocoDB best-effort, JSON always)."""
         with self._lock:
             self._json_ids.add(listing_id)
+            self._nocodb_ids.add(listing_id)
             self._save_json()
         self._nocodb_insert(listing_id, extra)
 
@@ -128,6 +161,7 @@ class SeenStore:
         ids = list(listing_ids)
         with self._lock:
             self._json_ids.update(ids)
+            self._nocodb_ids.update(ids)
             self._save_json()
         for lid in ids:
             self._nocodb_insert(lid)

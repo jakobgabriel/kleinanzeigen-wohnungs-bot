@@ -174,7 +174,8 @@ def run_cycle(
         filtered_count = len(candidates)
         run.event("filter", message="candidates kept", count=filtered_count)
 
-        # Dedup against the seen-store
+        # Dedup against the seen-store (loads the NocoDB id cache once, not per listing)
+        store.begin_cycle()
         new_pairs = [(l, c) for (l, c) in candidates if store.is_new(l.listing_id)]
         run.event("dedup", message=f"{len(new_pairs)} new of {filtered_count} candidates", count=len(new_pairs))
 
@@ -226,6 +227,38 @@ def run_cycle(
     return stats
 
 
+# A listing is only marked seen once it's actually delivered. If every configured
+# channel fails it stays unseen and is retried next cycle — but bounded, so a
+# permanently-undeliverable listing can't loop forever.
+MAX_NOTIFY_ATTEMPTS = 5
+_NOTIFY_ATTEMPTS: dict = {}
+
+
+def _settle(listing: Listing, delivered: bool, store: SeenStore, run: Run, *, note: str) -> bool:
+    """Mark a listing seen iff delivered (#1); else retry next cycle, bounded.
+
+    Returns True when the listing was delivered (and counted as notified).
+    """
+    lid = listing.listing_id
+    if delivered:
+        _NOTIFY_ATTEMPTS.pop(lid, None)
+        store.mark_seen(lid, extra=_seen_extra(listing))
+        run.event("notify_item", message=note, source=listing.source)
+        return True
+
+    attempts = _NOTIFY_ATTEMPTS.get(lid, 0) + 1
+    _NOTIFY_ATTEMPTS[lid] = attempts
+    if attempts >= MAX_NOTIFY_ATTEMPTS:
+        _NOTIFY_ATTEMPTS.pop(lid, None)
+        store.mark_seen(lid, extra=_seen_extra(listing))
+        log.warning("Giving up on %s after %d failed notify attempts; marking seen.", lid, attempts)
+        run.event("notify_item", level="error", message=f"{note}; gave up after {attempts} attempts", source=listing.source)
+    else:
+        log.warning("Notification undelivered for %s (attempt %d) — will retry next cycle.", lid, attempts)
+        run.event("notify_item", level="warning", message=f"{note}; undelivered, retry next cycle ({attempts})", source=listing.source)
+    return False
+
+
 def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new_listings: List[Listing]) -> int:
     """Notify new listings with a batching guard (C2). Returns count notified."""
     if not new_listings:
@@ -234,6 +267,7 @@ def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new
         return 0
 
     run.event("notify_start", count=len(new_listings))
+    channels = cfg.telegram_enabled or cfg.email_enabled or cfg.ha_webhook_url
     cap = cfg.max_notify_per_cycle
     individual = new_listings[:cap]
     overflow = new_listings[cap:]
@@ -241,25 +275,18 @@ def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new
 
     for listing in individual:
         result = notifier.notify(listing)
-        if result.any_sent or not (cfg.telegram_enabled or cfg.email_enabled or cfg.ha_webhook_url):
+        delivered = result.any_sent or not channels
+        note = f"telegram={result.telegram_ok} email={result.email_ok} ha={result.ha_ok}"
+        if _settle(listing, delivered, store, run, note=note):
             notified += 1
-        level = "warning" if result.any_failed else "info"
-        run.event(
-            "notify_item",
-            level=level,
-            message=f"telegram={result.telegram_ok} email={result.email_ok} ha={result.ha_ok}",
-            source=listing.source,
-        )
-        store.mark_seen(listing.listing_id, extra=_seen_extra(listing))
 
     if overflow:
-        notifier.send_summary(overflow)
+        sent = notifier.send_summary(overflow)
+        delivered = sent or not channels
         for listing in overflow:
-            store.mark_seen(listing.listing_id, extra=_seen_extra(listing))
-        run.event("notify_item", message=f"summary for {len(overflow)} overflow listings", count=len(overflow))
+            _settle(listing, delivered, store, run, note=f"summary({len(overflow)})")
 
     run.event("notify_done", count=notified)
-    run.event("persist", message="marked seen", count=len(new_listings))
     return notified
 
 

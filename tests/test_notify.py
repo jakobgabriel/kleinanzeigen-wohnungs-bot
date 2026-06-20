@@ -57,11 +57,77 @@ def test_channels_fail_independently():
     cfg = make_config(telegram_token="t", telegram_chat_id="c", ha_webhook_url="https://ha/hook")
     # Telegram fails, HA succeeds — both attempted, independent results.
     sess = RecordingSession(fail_urls=["api.telegram.org"])
-    res = Notifier(cfg, session=sess).notify(_listing())
+    res = Notifier(cfg, session=sess, sleep=lambda s: None).notify(_listing())
     assert res.telegram_ok is False
     assert res.ha_ok is True
     assert res.any_failed is True
     assert res.any_sent is True
+
+
+# ----- #3: notification retry / backoff / 429 ----------------------------- #
+class SeqResp:
+    def __init__(self, status, headers=None):
+        self.status_code = status
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+
+class SeqSession:
+    """Returns/raises a scripted sequence of responses, counting calls."""
+
+    def __init__(self, items):
+        self.items = list(items)
+        self.calls = 0
+
+    def post(self, *a, **k):
+        self.calls += 1
+        item = self.items.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def test_telegram_retries_on_429_then_succeeds():
+    cfg = make_config(telegram_token="t", telegram_chat_id="c", max_retries=3)
+    sess = SeqSession([SeqResp(429, {"Retry-After": "7"}), SeqResp(200)])
+    slept = []
+    res = Notifier(cfg, session=sess, sleep=slept.append).notify(_listing())
+    assert res.telegram_ok is True
+    assert sess.calls == 2
+    assert slept == [7.0]  # honored Retry-After
+
+
+def test_telegram_retries_on_5xx_with_backoff_then_gives_up():
+    cfg = make_config(telegram_token="t", telegram_chat_id="c", max_retries=3)
+    sess = SeqSession([SeqResp(503), SeqResp(502), SeqResp(500), SeqResp(500)])
+    slept = []
+    res = Notifier(cfg, session=sess, sleep=slept.append).notify(_listing())
+    assert res.telegram_ok is False
+    assert sess.calls == 4               # initial + 3 retries
+    assert slept == [2, 4, 8]            # exponential backoff
+
+
+def test_telegram_4xx_fails_fast_no_retry():
+    cfg = make_config(telegram_token="t", telegram_chat_id="c", max_retries=3)
+    sess = SeqSession([SeqResp(400)])
+    slept = []
+    res = Notifier(cfg, session=sess, sleep=slept.append).notify(_listing())
+    assert res.telegram_ok is False
+    assert sess.calls == 1               # 4xx is not retried
+    assert slept == []
+
+
+def test_telegram_retries_on_network_error_then_succeeds():
+    cfg = make_config(telegram_token="t", telegram_chat_id="c", max_retries=3)
+    sess = SeqSession([requests.ConnectionError("boom"), SeqResp(200)])
+    slept = []
+    res = Notifier(cfg, session=sess, sleep=slept.append).notify(_listing())
+    assert res.telegram_ok is True
+    assert sess.calls == 2
+    assert slept == [2]
 
 
 def test_ha_skipped_when_unset():

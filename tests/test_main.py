@@ -122,6 +122,79 @@ def test_batching_guard_caps_individual_and_summarizes(tmp_path, monkeypatch):
     assert all(store.is_new(f"kleinanzeigen:{i}") is False for i in range(20))
 
 
+class _FailResult:
+    telegram_ok = False
+    email_ok = None
+    ha_ok = None
+    any_sent = False
+    any_failed = True
+
+
+class _PartialResult:
+    telegram_ok = False
+    email_ok = True
+    ha_ok = None
+    any_sent = True
+    any_failed = True
+
+
+def test_failed_notification_not_marked_seen_then_retried_and_bounded(tmp_path, monkeypatch):
+    """#1: a listing nobody could be notified about stays unseen, retried, bounded."""
+    main_mod._NOTIFY_ATTEMPTS.clear()
+    listing = _listing(1)
+    _patch_fetch(monkeypatch, [listing])
+    cfg, store, notifier, runlogger = _make(tmp_path, [], telegram_token="t", telegram_chat_id="c")
+
+    calls = []
+    monkeypatch.setattr(notifier, "notify", lambda l: calls.append(l) or _FailResult())
+
+    # Cycle 1: delivery fails -> not counted, not marked seen.
+    stats = main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
+    assert stats["notified"] == 0
+    assert store.is_new("kleinanzeigen:1") is True   # still eligible for retry
+
+    # Keep failing until the bounded give-up marks it seen.
+    for _ in range(main_mod.MAX_NOTIFY_ATTEMPTS):
+        main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
+    assert store.is_new("kleinanzeigen:1") is False  # gave up -> marked seen
+    assert len(calls) >= 2                            # genuinely retried across cycles
+    main_mod._NOTIFY_ATTEMPTS.clear()
+
+
+def test_successful_notification_marks_seen(tmp_path, monkeypatch):
+    main_mod._NOTIFY_ATTEMPTS.clear()
+    listing = _listing(2)
+    _patch_fetch(monkeypatch, [listing])
+    cfg, store, notifier, runlogger = _make(tmp_path, [], telegram_token="t", telegram_chat_id="c")
+    monkeypatch.setattr(notifier, "notify", lambda l: _Result2())
+    stats = main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
+    assert stats["notified"] == 1
+    assert store.is_new("kleinanzeigen:2") is False
+
+
+def test_partial_delivery_marks_seen(tmp_path, monkeypatch):
+    """Interim policy: any_sent (e.g. email ok, telegram failed) -> marked seen."""
+    main_mod._NOTIFY_ATTEMPTS.clear()
+    listing = _listing(3)
+    _patch_fetch(monkeypatch, [listing])
+    cfg, store, notifier, runlogger = _make(
+        tmp_path, [], telegram_token="t", telegram_chat_id="c",
+        smtp_host="smtp", email_from="a@x", email_to="b@y",
+    )
+    monkeypatch.setattr(notifier, "notify", lambda l: _PartialResult())
+    stats = main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
+    assert stats["notified"] == 1
+    assert store.is_new("kleinanzeigen:3") is False
+
+
+class _Result2:
+    telegram_ok = True
+    email_ok = None
+    ha_ok = None
+    any_sent = True
+    any_failed = False
+
+
 def test_filter_excludes_out_of_criteria(tmp_path, monkeypatch):
     from app.config import Criteria
     listings = [_listing(1, price=2000), _listing(2, price=900)]
