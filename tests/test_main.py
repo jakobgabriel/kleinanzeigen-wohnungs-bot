@@ -33,15 +33,16 @@ class _Ok:
 
 
 def _make(tmp_path, listings, **cfg_over):
-    cfg = make_config(
+    opts = dict(
         ka_urls=["https://ka.example/s"],
         rss_urls=[],
         json_store_path=str(tmp_path / "seen.json"),
         run_log_jsonl_path=str(tmp_path / "runs.jsonl"),
         run_log_enabled=False,
         health_path=str(tmp_path / "health.json"),
-        **cfg_over,
     )
+    opts.update(cfg_over)
+    cfg = make_config(**opts)
     store = SeenStore(cfg, session=DummySession())
     notifier = Notifier(cfg, session=DummySession())
     runlogger = RunLogger(cfg, session=DummySession())
@@ -131,6 +132,33 @@ def test_filter_excludes_out_of_criteria(tmp_path, monkeypatch):
     monkeypatch.setattr(notifier, "notify", lambda l: notified.append(l) or _Result())
     main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
     assert [l.listing_id for l in notified] == ["kleinanzeigen:2"]
+
+
+def test_multiple_ka_areas_all_polled_under_global_criteria(tmp_path, monkeypatch):
+    """B3: several KA search URLs (areas) are each polled; global criteria apply."""
+    from app.config import Criteria
+
+    per_url = {
+        "https://ka.example/berlin": [_listing(1, price=900)],
+        "https://ka.example/potsdam": [_listing(2, price=2000), _listing(3, price=800)],
+    }
+
+    def fake_ka(url, **kw):
+        return per_url[url]
+
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", fake_ka)
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+
+    cfg, store, notifier, runlogger = _make(
+        tmp_path, [], ka_urls=list(per_url), criteria=Criteria(max_rent=1000)
+    )
+    notified = []
+    monkeypatch.setattr(notifier, "notify", lambda l: notified.append(l) or _Result())
+    stats = main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
+
+    assert stats["sources_polled"] == 2
+    # The over-budget Potsdam listing is filtered out; both areas contributed.
+    assert sorted(l.listing_id for l in notified) == ["kleinanzeigen:1", "kleinanzeigen:3"]
 
 
 def test_cycle_survives_source_exception(tmp_path, monkeypatch):

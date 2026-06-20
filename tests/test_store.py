@@ -95,6 +95,34 @@ def test_mark_seen_writes_both_stores(tmp_path):
         assert "kleinanzeigen:7" in json.load(fh)["seen"]
 
 
+def test_schema_check_ok(tmp_path):
+    cfg = _nocodb_config(tmp_path)
+    sess = FakeNocoSession()
+    sess.rows.append({"listing_id": "kleinanzeigen:1", "title": "x"})
+    assert SeenStore(cfg, session=sess).schema_check() is True
+
+
+def test_schema_check_missing_id_field_warns(tmp_path, caplog):
+    cfg = _nocodb_config(tmp_path)
+    sess = FakeNocoSession()
+    sess.rows.append({"wrong_field": "x"})  # id field absent from records
+    with caplog.at_level("WARNING"):
+        assert SeenStore(cfg, session=sess).schema_check() is False
+    assert any("id field" in r.message for r in caplog.records)
+
+
+def test_schema_check_unreachable_falls_back(tmp_path, caplog):
+    cfg = _nocodb_config(tmp_path)
+    with caplog.at_level("WARNING"):
+        assert SeenStore(cfg, session=FakeNocoSession(down=True)).schema_check() is False
+    assert any("schema check failed" in r.message for r in caplog.records)
+
+
+def test_schema_check_skipped_without_nocodb(tmp_path):
+    cfg = make_config(json_store_path=str(tmp_path / "seen.json"))
+    assert SeenStore(cfg, session=FakeNocoSession()).schema_check() is False
+
+
 def test_nocodb_down_degrades_to_json(tmp_path, caplog):
     cfg = _nocodb_config(tmp_path)
     sess = FakeNocoSession(down=True)

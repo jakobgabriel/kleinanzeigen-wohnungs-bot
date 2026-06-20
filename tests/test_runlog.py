@@ -188,6 +188,43 @@ def test_prune_disabled_when_retention_zero(tmp_path):
     rl.prune()  # no-op, must not raise
 
 
+class PruningNoco(FakeNoco):
+    """Returns one page of old rows on first GET, then empty (pagination ends)."""
+
+    def __init__(self):
+        super().__init__()
+        self.deletes = []
+        self._served = {}
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        served = self._served.get(url, False)
+        self._served[url] = True
+        rows = [] if served else [{"Id": 1}, {"Id": 2}]
+        return FakeResp(200, {"list": rows})
+
+    def delete(self, url, headers=None, data=None, timeout=None):
+        self.deletes.append(json.loads(data))
+        return FakeResp(200, {})
+
+
+def test_prune_deletes_old_rows(tmp_path):
+    noco = PruningNoco()
+    rl = RunLogger(_runlog_config(tmp_path, run_log_retention_days=30), session=noco)
+    rl.prune()
+    # Deletes issued for both the runs table and the events table.
+    assert len(noco.deletes) == 2
+    assert noco.deletes[0] == [{"Id": 1}, {"Id": 2}]
+
+
+def test_prune_failure_is_non_fatal(tmp_path, caplog):
+    class BoomNoco(FakeNoco):
+        def get(self, *a, **k):
+            raise requests.ConnectionError("down")
+
+    rl = RunLogger(_runlog_config(tmp_path, run_log_retention_days=30), session=BoomNoco())
+    rl.prune()  # must swallow and not raise
+
+
 def test_trigger_recorded(tmp_path):
     rl = RunLogger(_runlog_config(tmp_path), session=FakeNoco())
     run = rl.start(trigger="startup_prime")

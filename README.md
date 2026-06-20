@@ -53,6 +53,30 @@ TELEGRAM_CHAT_ID=987654
 At least one of `KA_SEARCH_URLS` / `RSS_URLS` is required; with no notification
 channel configured, matches are only logged.
 
+### Multiple search areas (per-source overrides)
+
+Encode each area in its own Kleinanzeigen search URL and list them all — the
+area lives in the URL, while the global criteria (`MAX_RENT`, `MIN_ROOMS`, …)
+apply to every source:
+
+```ini
+KA_SEARCH_URLS=
+  https://www.kleinanzeigen.de/s-wohnung-mieten/berlin/c203l3331,
+  https://www.kleinanzeigen.de/s-wohnung-mieten/potsdam/c203l3640
+```
+
+(Comma- or newline-separated.) This covers per-area searching without per-source
+rent overrides; the same `Criteria` is matched against listings from all URLs.
+
+### Detail-page enrichment (optional)
+
+Kleinanzeigen search cards sometimes omit the price, room count, or area. With
+`ENRICH_DETAIL=true`, a *new* listing missing any of those has its detail page
+fetched once (spaced by `PER_REQUEST_DELAY_S`) to fill the gaps, after which it
+is re-checked against the criteria — so a flat that turns out to be over budget
+is dropped rather than alerted. Already-seen listings are never re-fetched.
+Default is `false` (no detail fetches), keeping scraping minimal.
+
 ### Run locally (without Docker)
 
 ```bash
