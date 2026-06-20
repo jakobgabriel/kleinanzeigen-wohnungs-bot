@@ -229,9 +229,10 @@ def load_config() -> Config:
 
 def validate_config(cfg: Config) -> None:
     """Validate config (D2). Fatal: no sources. Otherwise warn and degrade."""
-    if not cfg.ka_urls and not cfg.rss_urls:
+    if not cfg.ka_urls and not cfg.rss_urls and not cfg.searches_from_nocodb:
         raise SystemExit(
-            "FATAL: no sources configured. Set KA_SEARCH_URLS and/or RSS_URLS."
+            "FATAL: no sources configured. Set KA_SEARCH_URLS and/or RSS_URLS, "
+            "or NOCODB_SEARCHES_TABLE_ID for a NocoDB-managed search list."
         )
 
     # Partially configured notification channels: warn and disable just that one.

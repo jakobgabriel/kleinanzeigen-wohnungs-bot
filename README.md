@@ -10,6 +10,12 @@ The full lifecycle of every poll cycle is recorded to **NocoDB** so you can audi
 exactly what each run did — which sources answered, what was filtered, what was
 new, what notified, and where anything went wrong.
 
+> 📦 **Running it in production?** The
+> **[Container & Operations Guide](docs/CONTAINER.md)** is the full reference:
+> image build, deployment (compose / `docker run` / Synology-Portainer), the
+> `/data` volume, the complete env-var table, NocoDB tables, the health endpoint,
+> signals, observability, and troubleshooting.
+
 ---
 
 ## How it works

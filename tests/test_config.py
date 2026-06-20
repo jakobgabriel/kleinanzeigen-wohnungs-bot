@@ -14,6 +14,15 @@ def test_no_sources_is_fatal():
         validate_config(cfg)
 
 
+def test_nocodb_searches_table_satisfies_source_requirement():
+    """Empty env URLs are OK when searches come from a NocoDB table."""
+    cfg = make_config(
+        ka_urls=[], rss_urls=[],
+        nocodb_url="https://noco", nocodb_token="t", nocodb_searches_table_id="searches",
+    )
+    validate_config(cfg)  # must not raise
+
+
 def test_partial_telegram_warns(caplog):
     cfg = make_config(telegram_token="abc", telegram_chat_id=None)
     with caplog.at_level(logging.WARNING):
