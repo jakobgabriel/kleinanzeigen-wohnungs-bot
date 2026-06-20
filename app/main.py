@@ -78,6 +78,48 @@ def fetch_all(cfg: Config, session: requests.Session, run: Run) -> Tuple[List[Li
     return listings, polled, len(run._failed_sources)
 
 
+def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_listings: List[Listing]) -> List[Listing]:
+    """Enrich Kleinanzeigen listings missing price/rooms/sqm, then re-filter (B2).
+
+    Only new (not-yet-seen) listings reach here, so a detail page is never
+    fetched for an already-seen id. Each detail page is fetched at most once,
+    spaced by PER_REQUEST_DELAY_S. Listings that fall out of criteria once their
+    real values are known are dropped here.
+    """
+    enriched_count = 0
+    for listing in new_listings:
+        if listing.source != "kleinanzeigen" or not listing._missing:
+            continue
+        try:
+            fields = sources.fetch_kleinanzeigen_detail(
+                listing.url,
+                user_agent=cfg.user_agent,
+                timeout=cfg.http_timeout_s,
+                max_retries=cfg.max_retries,
+                session=session,
+            )
+            before = listing._missing
+            sources.enrich_listing(listing, fields)
+            if listing._missing != before:
+                enriched_count += 1
+        except sources.FetchError as exc:
+            run.event("fetch_source", level="warning", message=f"enrich failed: {exc}", source=listing.url)
+        except Exception as exc:  # enrichment is best-effort, never fatal
+            log.warning("Detail enrichment failed for %s: %s", listing.url, exc)
+        sources.polite_pause(cfg.per_request_delay_s, cfg.request_jitter_s)
+
+    refiltered = [l for l in new_listings if matches(l, cfg.criteria)]
+    run.event(
+        "filter",
+        message="re-filter after enrichment",
+        count=len(refiltered),
+    )
+    if enriched_count:
+        log.info("Enriched %d listing(s) from detail pages; %d remain after re-filter.",
+                 enriched_count, len(refiltered))
+    return refiltered
+
+
 def run_cycle(
     cfg: Config,
     store: SeenStore,
@@ -107,8 +149,13 @@ def run_cycle(
 
         # Dedup
         new_listings = [l for l in candidates if store.is_new(l.listing_id)]
+        run.event("dedup", message=f"{len(new_listings)} new of {filtered_count} candidates", count=len(new_listings))
+
+        # Detail-page enrichment (B2): fill missing fields on new listings only
+        # (never refetches an already-seen id), then re-filter with real values.
+        if cfg.enrich_detail and new_listings:
+            new_listings = _enrich_new(cfg, session, run, new_listings)
         new_count = len(new_listings)
-        run.event("dedup", message=f"{new_count} new of {filtered_count} candidates", count=new_count)
 
         if prime:
             # Silent prime: mark everything seen, notify nothing.

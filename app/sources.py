@@ -36,6 +36,12 @@ KA_DESCRIPTION_SELECTOR = "p.aditem-main--middle--description"
 KA_TAGS_SELECTOR = "span.simpletag"
 KA_IMAGE_SELECTOR = "div.aditem-image img"
 
+# Detail-page selectors — used only when ENRICH_DETAIL is enabled (B2).
+KA_DETAIL_PRICE_SELECTOR = "#viewad-price"
+KA_DETAIL_LIST_ITEM_SELECTOR = "li.addetailslist--detail"
+KA_DETAIL_VALUE_SELECTOR = "span.addetailslist--detail--value"
+KA_DETAIL_DESCRIPTION_SELECTOR = "#viewad-description-text"
+
 # A 403 from Kleinanzeigen is a block, not a transient error — never retried.
 BLOCK_STATUS = 403
 
@@ -196,6 +202,83 @@ def _origin(url: str) -> str:
     if parsed.scheme and parsed.netloc:
         return f"{parsed.scheme}://{parsed.netloc}"
     return KA_BASE_URL
+
+
+# --------------------------------------------------------------------------- #
+# Detail-page enrichment (B2)
+# --------------------------------------------------------------------------- #
+def _parse_kleinanzeigen_detail(html: str) -> dict:
+    """Parse a KA detail page for price/rooms/sqm/description.
+
+    Returns a dict with whichever fields were found; missing ones are absent so
+    the caller fills only the gaps. Resilient: never raises on stale markup.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    out: dict = {}
+
+    price = parse_number(_text(soup.select_one(KA_DETAIL_PRICE_SELECTOR)))
+    if price is not None:
+        out["price"] = price
+
+    for item in soup.select(KA_DETAIL_LIST_ITEM_SELECTOR):
+        value_node = item.select_one(KA_DETAIL_VALUE_SELECTOR)
+        value_text = _text(value_node)
+        if not value_text:
+            continue
+        # The label is the li text minus the value span text.
+        label = (_text(item) or "").replace(value_text, "").strip().lower()
+        if ("wohnfläche" in label or "fläche" in label or "m²" in value_text.lower()) and "sqm" not in out:
+            num = parse_number(value_text)
+            if num is not None:
+                out["sqm"] = num
+        elif "zimmer" in label and "rooms" not in out:
+            num = parse_number(value_text)
+            if num is not None:
+                out["rooms"] = num
+
+    desc = _text(soup.select_one(KA_DETAIL_DESCRIPTION_SELECTOR))
+    if desc:
+        out["description"] = desc
+
+    return out
+
+
+def fetch_kleinanzeigen_detail(
+    url: str,
+    *,
+    user_agent: str,
+    timeout: float,
+    max_retries: int = 3,
+    session: Optional[requests.Session] = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
+    """Fetch a single KA detail page and return parsed fields (B2)."""
+    resp = http_get(
+        url,
+        user_agent=user_agent,
+        timeout=timeout,
+        max_retries=max_retries,
+        session=session,
+        sleep=sleep,
+    )
+    return _parse_kleinanzeigen_detail(resp.text)
+
+
+def enrich_listing(listing: Listing, fields: dict) -> Listing:
+    """Fill only the listing's missing (None) price/rooms/sqm from ``fields``.
+
+    Mutates and returns the listing. Known fields are never overwritten —
+    enrichment only fills gaps. The ``_missing`` tuple is recomputed.
+    """
+    for attr in ("price", "rooms", "sqm"):
+        if getattr(listing, attr) is None and fields.get(attr) is not None:
+            setattr(listing, attr, fields[attr])
+    if listing.description is None and fields.get("description"):
+        listing.description = fields["description"]
+    listing._missing = tuple(
+        name for name in ("price", "rooms", "sqm") if getattr(listing, name) is None
+    )
+    return listing
 
 
 # --------------------------------------------------------------------------- #
