@@ -152,6 +152,29 @@ Portainer *Environment variables* panel is what configures the container.
 the panel variables didn't reach the container — make sure they're set under
 *Environment variables* (Advanced mode) and redeploy.
 
+If the **build fails** on a Synology NAS with `failed to read dockerfile: … buildkit-mount…/Dockerfile: no such file or directory`, that's DSM's BuildKit, not the repo. Either:
+- try the legacy builder — add `DOCKER_BUILDKIT=0` and `COMPOSE_DOCKER_CLI_BUILD=0` to the stack's *Environment variables* and redeploy; or
+- **don't build on the NAS at all** — use the prebuilt image (§3.4).
+
+### 3.4 Prebuilt image — no NAS build (recommended if builds fail)
+
+CI publishes a multi-arch image to GHCR on every push to `main`
+(`ghcr.io/jakobgabriel/kleinanzeigen-wohnungs-bot:latest`). Deploying it skips the
+build entirely, sidestepping the Synology BuildKit issue.
+
+1. **One-time:** make the GHCR package public — GitHub → your profile →
+   *Packages* → `kleinanzeigen-wohnungs-bot` → *Package settings* → *Change
+   visibility → Public*. (No secrets are baked into the image; config is supplied
+   at runtime.) Alternatively add a `ghcr.io` registry credential under Portainer
+   → *Registries*.
+2. In Portainer, **Add stack** (Web editor is fine — no Git needed). Paste the
+   contents of `docker-compose.registry.yml`, or use a Repository stack with
+   **Compose path** `docker-compose.registry.yml`.
+3. Set your variables in the **Environment variables** panel (same as §3.3).
+4. **Deploy** — Portainer pulls the image and starts; no build step.
+5. **Updating:** *Pull and redeploy* pulls the latest image. Pin a specific build
+   by setting `IMAGE_TAG=<commit-sha>` in the panel instead of `latest`.
+
 ---
 
 ## 4. Persisted data & volumes
@@ -434,6 +457,7 @@ NocoDB seen table if used), restart. The next run re-primes silently.
 | Searches edits not taking effect | Only applies in NocoDB mode; confirm `NOCODB_SEARCHES_TABLE_ID` is set and rows have `enabled` checked. Wait one cycle or send `SIGUSR1`. |
 | `docker ps` shows `unhealthy` | `HEALTHCHECK_PORT` not set, or the process is stuck — check logs. |
 | Email fails with TLS errors | Try `SMTP_USE_TLS=false` for plain/465 setups, or correct `SMTP_PORT`. |
+| Build fails: `failed to read dockerfile … buildkit-mount…/Dockerfile` | Synology BuildKit bug, not the repo. Set `DOCKER_BUILDKIT=0` + `COMPOSE_DOCKER_CLI_BUILD=0` in the stack env, or use the prebuilt image (§3.4) so nothing builds on the NAS. |
 
 ---
 
