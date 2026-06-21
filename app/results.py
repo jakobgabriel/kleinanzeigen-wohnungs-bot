@@ -82,7 +82,13 @@ class ResultsSink:
 
     def write(self, listings: List[Listing]) -> None:
         """Bulk-insert full rows for ``listings``. Best-effort; never raises."""
-        if not self.enabled or not listings:
+        if not listings:
+            return
+        if not self.enabled:
+            log.info(
+                "Results table not configured (NOCODB_LISTINGS_TABLE_ID unset) — "
+                "%d listing(s) not stored in NocoDB.", len(listings),
+            )
             return
         now = _now_iso()
         payloads = [self._payload(l, now) for l in listings]
@@ -93,7 +99,15 @@ class ResultsSink:
                 resp = self._session.post(
                     url, headers=self._headers(), data=json.dumps(batch), timeout=self.cfg.http_timeout_s
                 )
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    body = (getattr(resp, "text", "") or "")[:600]
+                    log.warning(
+                        "Results write FAILED: NocoDB returned HTTP %s — %s. "
+                        "(A missing column is the usual cause — ensure flatwatch_listings "
+                        "has all columns incl. bedrooms/features/available/last_checked/removed_at.)",
+                        resp.status_code, body,
+                    )
+                    return
             log.info("Wrote %d listing(s) to the NocoDB results table.", len(payloads))
         except (requests.RequestException, ValueError) as exc:
             log.warning("Could not write results to NocoDB (non-fatal): %s", exc)

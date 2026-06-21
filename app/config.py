@@ -123,6 +123,7 @@ class Config:
     # Source robustness
     enrich_detail: bool
     ka_max_pages: int
+    persist_batch_size: int   # store the prime backlog incrementally in batches
 
     # Daily availability recheck (tags removed listings in the results table)
     recheck_enabled: bool
@@ -227,6 +228,7 @@ def load_config() -> Config:
         max_retries=_env_int("HTTP_MAX_RETRIES", 3),
         enrich_detail=_env_bool("ENRICH_DETAIL", False),
         ka_max_pages=max(1, _env_int("KA_MAX_PAGES", 20)),
+        persist_batch_size=max(1, _env_int("PERSIST_BATCH_SIZE", 25)),
         recheck_enabled=_env_bool("RECHECK_ENABLED", True),
         recheck_interval_days=max(1, _env_int("RECHECK_INTERVAL_DAYS", 1)),
         json_store_path=_env("JSON_STORE_PATH", "/data/seen.json"),

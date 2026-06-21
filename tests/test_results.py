@@ -89,6 +89,31 @@ def test_noop_when_table_id_unset(tmp_path):
     assert sess.posts == []
 
 
+def test_write_surfaces_nocodb_error_body(tmp_path, caplog):
+    """A NocoDB rejection (e.g. unknown column) is logged with its body, not hidden."""
+    class ErrResp:
+        status_code = 400
+        text = '{"msg":"Field \'bedrooms\' not found in table"}'
+
+        def raise_for_status(self):
+            raise requests.HTTPError()
+
+    class ErrSession:
+        def post(self, *a, **k):
+            return ErrResp()
+
+    with caplog.at_level("WARNING"):
+        ResultsSink(_cfg(tmp_path), session=ErrSession()).write([_listing(1)])
+    assert "Results write FAILED" in caplog.text and "bedrooms" in caplog.text
+
+
+def test_write_logs_when_table_unconfigured(tmp_path, caplog):
+    cfg = make_config(json_store_path=str(tmp_path / "seen.json"))  # no listings table id
+    with caplog.at_level("INFO"):
+        ResultsSink(cfg, session=FakeSession()).write([_listing(1)])
+    assert "Results table not configured" in caplog.text
+
+
 def test_write_never_raises_on_failure(tmp_path, caplog):
     sess = FakeSession(down=True)
     with caplog.at_level("WARNING"):

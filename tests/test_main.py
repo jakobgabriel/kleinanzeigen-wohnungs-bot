@@ -413,6 +413,34 @@ def test_results_written_for_new_matches_then_deduped(tmp_path, monkeypatch):
     assert res.written == []
 
 
+def test_prime_incremental_persists_in_batches(tmp_path, monkeypatch):
+    """A large enriched prime backlog is stored in batches (rows land progressively)."""
+    from app.config import Criteria
+    from app.searches import Search, SearchProvider
+
+    listings = [_listing(i) for i in range(5)]
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", lambda u, **k: listings)
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen_detail", lambda u, **k: {"bedrooms": 2.0})
+
+    cfg, store, notifier, runlogger = _make(
+        tmp_path, [], ka_urls=[], rss_urls=[], enrich_detail=True, persist_batch_size=2,
+    )
+    res = StubResults()
+
+    class Prov(SearchProvider):
+        def get_searches(self):
+            return [Search("https://ka/s", "kleinanzeigen", Criteria())]
+
+    stats = main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(),
+                               prime=True, search_provider=Prov(cfg, DummySession()), results=res)
+    # 5 listings, batch size 2 -> three results.write calls (2, 2, 1), all stored.
+    assert len(res.written) == 3
+    assert sum(len(w) for w in res.written) == 5
+    assert stats["new_count"] == 5
+    assert all(store.is_new(f"kleinanzeigen:{i}") is False for i in range(5))
+
+
 def test_results_written_on_prime_backlog(tmp_path, monkeypatch):
     listings = [_listing(1), _listing(2)]
     _patch_fetch(monkeypatch, listings)

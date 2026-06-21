@@ -133,7 +133,8 @@ def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, ru
     return pairs, polled
 
 
-def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: List[Pair]) -> List[Pair]:
+def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: List[Pair],
+                progress_total: int = 0, progress_offset: int = 0) -> List[Pair]:
     """Enrich new Kleinanzeigen listings from their detail page, then re-filter (B2).
 
     Fetches each new (not-yet-seen) KA listing's detail page once — spaced by
@@ -141,10 +142,12 @@ def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: Lis
     attributes (bedrooms, bathrooms, floor, type, Verfügbar ab, Nebenkosten,
     Warmmiete, Kaution, feature tags), and to fill any missing price/rooms/sqm.
     Listings that fall out of their search's criteria once their real values are
-    known are dropped here.
+    known are dropped here. ``progress_total``/``progress_offset`` drive a periodic
+    "enriching X/N" log for large backlogs.
     """
     enriched_count = 0
-    for listing, _criteria in new_pairs:
+    total = progress_total or len(new_pairs)
+    for idx, (listing, _criteria) in enumerate(new_pairs):
         if listing.source != "kleinanzeigen":
             continue
         try:
@@ -162,6 +165,9 @@ def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: Lis
             run.event("fetch_source", level="warning", message=f"enrich failed: {exc}", source=listing.url)
         except Exception as exc:  # enrichment is best-effort, never fatal
             log.warning("Detail enrichment failed for %s: %s", listing.url, exc)
+        done = progress_offset + idx + 1
+        if total > 10 and done % 10 == 0:
+            log.info("enrich: fetched detail pages for %d/%d listing(s)…", done, total)
         sources.polite_pause(cfg.per_request_delay_s, cfg.request_jitter_s)
 
     refiltered = [(l, c) for (l, c) in new_pairs if matches(l, c)]
@@ -219,6 +225,7 @@ def run_cycle(
         searches = provider.get_searches()
         pairs, polled = fetch_all(cfg, searches, session, run)
         fetched_count = len(pairs)
+        log.info("pipeline[1/5] fetched: %d listing(s) from %d search(es).", fetched_count, polled)
 
         # Filter each listing against the criteria of its own search.
         candidates = [(l, c) for (l, c) in pairs if matches(l, c)]
@@ -226,25 +233,39 @@ def run_cycle(
         candidates = _dedup_pairs(candidates)
         filtered_count = len(candidates)
         run.event("filter", message="candidates kept", count=filtered_count)
+        log.info("pipeline[2/5] filtered: %d matched criteria, %d dropped.",
+                 filtered_count, fetched_count - filtered_count)
 
         # Dedup against the seen-store (loads the NocoDB id cache once, not per listing)
         store.begin_cycle()
         new_pairs = [(l, c) for (l, c) in candidates if store.is_new(l.listing_id)]
         run.event("dedup", message=f"{len(new_pairs)} new of {filtered_count} candidates", count=len(new_pairs))
+        log.info("pipeline[3/5] dedup: %d new, %d already seen.",
+                 len(new_pairs), filtered_count - len(new_pairs))
 
-        # Detail-page enrichment (B2): fill missing fields on new listings only
-        # (never refetches an already-seen id), then re-filter with real values.
-        if cfg.enrich_detail and new_pairs:
-            new_pairs = _enrich_new(cfg, session, run, new_pairs)
-        new_listings = [l for (l, _c) in new_pairs]
-        new_count = len(new_listings)
-
-        if prime:
-            # Silent prime: record everything (incl. full results) but notify nothing.
-            _persist(store, results, new_listings)
-            run.event("persist", message="silent prime", count=new_count)
+        # Detail-page enrichment (B2): fetch each new listing's detail page for the
+        # full description + all detail fields, then re-filter with real values.
+        # A large first-run backlog with enrichment is enriched + stored in
+        # batches so rows land in NocoDB progressively (and survive a restart).
+        if prime and cfg.enrich_detail and len(new_pairs) > cfg.persist_batch_size:
+            new_count = _prime_incremental(cfg, session, store, results, run, new_pairs)
+            run.event("persist", message="silent prime (incremental)", count=new_count)
         else:
-            notified = _notify_new(cfg, store, notifier, results, run, new_listings)
+            if cfg.enrich_detail and new_pairs:
+                log.info("pipeline[4/5] enrich: fetching detail pages for %d new listing(s)…", len(new_pairs))
+                new_pairs = _enrich_new(cfg, session, run, new_pairs)
+            else:
+                log.info("pipeline[4/5] enrich: skipped (ENRICH_DETAIL=%s, %d new).",
+                         cfg.enrich_detail, len(new_pairs))
+            new_listings = [l for (l, _c) in new_pairs]
+            new_count = len(new_listings)
+            if prime:
+                log.info("pipeline[5/5] persist (silent prime): storing %d new listing(s).", new_count)
+                _persist(store, results, new_listings)
+                run.event("persist", message="silent prime", count=new_count)
+            else:
+                log.info("pipeline[5/5] notify+persist: %d new listing(s).", new_count)
+                notified = _notify_new(cfg, store, notifier, results, run, new_listings)
 
     except Exception as exc:  # catch-log-continue; record + classify as failed
         log.exception("Cycle failed")
@@ -390,7 +411,26 @@ def _persist(store: SeenStore, results: ResultsSink, listings: List[Listing]) ->
     if not listings:
         return
     store.mark_seen_many([(l.listing_id, _seen_extra(l)) for l in listings])
+    log.info("persist: marked %d listing(s) as seen.", len(listings))
     results.write(listings)
+
+
+def _prime_incremental(cfg: Config, session: requests.Session, store: SeenStore,
+                       results: ResultsSink, run: Run, new_pairs: List[Pair]) -> int:
+    """Prime a large backlog in batches: enrich + persist each chunk so rows land
+    in NocoDB progressively (and a restart keeps everything already stored). Returns
+    the number of listings stored."""
+    total = len(new_pairs)
+    bs = cfg.persist_batch_size
+    stored = 0
+    log.info("pipeline[4-5/5] prime: enriching + storing %d new listing(s) in batches of %d…", total, bs)
+    for i in range(0, total, bs):
+        chunk = _enrich_new(cfg, session, run, new_pairs[i:i + bs], progress_total=total, progress_offset=i)
+        listings = [l for (l, _c) in chunk]
+        _persist(store, results, listings)
+        stored += len(listings)
+        log.info("prime progress: processed %d/%d, stored %d so far.", min(i + bs, total), total, stored)
+    return stored
 
 
 def _dedup_pairs(pairs: List[Pair]) -> List[Pair]:

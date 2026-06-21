@@ -26,6 +26,7 @@ def make_config(**overrides) -> Config:
         max_retries=3,
         enrich_detail=False,
         ka_max_pages=1,
+        persist_batch_size=25,
         recheck_enabled=True,
         recheck_interval_days=1,
         json_store_path="/tmp/flatwatch-test-seen.json",
