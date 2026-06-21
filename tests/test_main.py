@@ -471,3 +471,72 @@ def test_sigusr1_sets_manual_trigger_and_sleep_wakes(monkeypatch):
     assert main_mod._sleep_interval(30) is True  # would otherwise block 30 min
     # reset module global so other tests are unaffected
     monkeypatch.setattr(main_mod, "_TRIGGER_NOW", False)
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent detail enrichment (ENRICH_CONCURRENCY)
+# --------------------------------------------------------------------------- #
+class _StubRun:
+    def __init__(self):
+        self.events = []
+
+    def event(self, *a, **k):
+        self.events.append((a, k))
+
+
+def _enrich_pairs(n):
+    from app.config import Criteria
+    return [(_listing(i), Criteria()) for i in range(n)]
+
+
+def test_enrich_concurrent_enriches_all_listings(monkeypatch):
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen_detail", lambda u, **k: {"bedrooms": 2.0})
+    cfg = make_config(enrich_concurrency=4)
+    pairs = _enrich_pairs(6)
+    out = main_mod._enrich_new(cfg, DummySession(), _StubRun(), pairs)
+    assert len(out) == 6  # all pass the empty criteria after enrichment
+    assert all(l.details.get("bedrooms") == 2.0 for (l, _c) in out)
+
+
+def test_enrich_concurrent_survives_one_failure(monkeypatch):
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+
+    def fake_detail(url, **kw):
+        if url.endswith("/3"):
+            raise main_mod.sources.FetchError("blocked", blocked=True)
+        return {"bedrooms": 2.0}
+
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen_detail", fake_detail)
+    cfg = make_config(enrich_concurrency=4)
+    run = _StubRun()
+    out = main_mod._enrich_new(cfg, DummySession(), run, _enrich_pairs(6))
+    by_id = {l.listing_id: l for (l, _c) in out}
+    assert len(out) == 6  # best-effort: the failure doesn't drop anyone
+    assert by_id["kleinanzeigen:3"].details.get("bedrooms") is None   # the one that failed
+    assert by_id["kleinanzeigen:0"].details.get("bedrooms") == 2.0    # the rest enriched
+    assert any("enrich failed" in str(k.get("message", "")) for _a, k in run.events)
+
+
+def test_enrich_sequential_and_concurrent_agree(monkeypatch):
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen_detail", lambda u, **k: {"bedrooms": 3.0})
+
+    seq = main_mod._enrich_new(make_config(enrich_concurrency=1), DummySession(), _StubRun(), _enrich_pairs(5))
+    con = main_mod._enrich_new(make_config(enrich_concurrency=4), DummySession(), _StubRun(), _enrich_pairs(5))
+    assert sorted(l.listing_id for (l, _c) in seq) == sorted(l.listing_id for (l, _c) in con)
+    assert all(l.details.get("bedrooms") == 3.0 for (l, _c) in con)
+
+
+def test_enrich_skips_non_kleinanzeigen(monkeypatch):
+    from app.config import Criteria
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+    calls = []
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen_detail",
+                        lambda u, **k: calls.append(u) or {"bedrooms": 2.0})
+    rss = Listing.create(source="rss", title="Feed flat", url="https://feed/1", native_id="1")
+    pairs = [(rss, Criteria())] + _enrich_pairs(2)
+    cfg = make_config(enrich_concurrency=4)
+    out = main_mod._enrich_new(cfg, DummySession(), _StubRun(), pairs)
+    assert len(out) == 3
+    assert "https://feed/1" not in calls  # RSS listing never fetched for detail

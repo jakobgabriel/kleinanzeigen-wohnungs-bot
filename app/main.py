@@ -9,6 +9,7 @@ catch-log-continue.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import random
 import signal
@@ -136,42 +137,92 @@ def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, ru
     return pairs, polled
 
 
+# Each enrichment worker thread gets its own requests.Session: requests.Session
+# is not guaranteed thread-safe for concurrent requests, so we never share the
+# main loop's session across the pool.
+_ENRICH_LOCAL = threading.local()
+
+
+def _enrich_session() -> requests.Session:
+    """Return this thread's own requests.Session (created lazily)."""
+    sess = getattr(_ENRICH_LOCAL, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        _ENRICH_LOCAL.session = sess
+    return sess
+
+
+def _enrich_one(cfg: Config, session: requests.Session, listing: Listing) -> Tuple[str, Optional[str]]:
+    """Fetch + enrich one KA listing in place. Returns (status, detail); never raises.
+
+    ``status`` is one of ``enriched`` / ``noop`` / ``fetcherror`` / ``error`` so the
+    caller can log/aggregate on the main thread (keeping RunLogger single-threaded).
+    A short per-worker pause (ENRICH_DELAY_S) throttles requests to stay polite.
+    """
+    try:
+        fields = sources.fetch_kleinanzeigen_detail(
+            listing.url,
+            user_agent=cfg.user_agent,
+            timeout=cfg.http_timeout_s,
+            max_retries=cfg.max_retries,
+            session=session,
+        )
+        sources.enrich_listing(listing, fields)
+        return ("enriched" if fields else "noop", None)
+    except sources.FetchError as exc:
+        return ("fetcherror", str(exc))
+    except Exception as exc:  # enrichment is best-effort, never fatal
+        return ("error", str(exc))
+    finally:
+        sources.polite_pause(cfg.enrich_delay_s, cfg.enrich_delay_s)
+
+
+def _enrich_worker(cfg: Config, listing: Listing) -> Tuple[str, Optional[str]]:
+    """Thread-pool entry point: enrich one listing using a per-thread Session."""
+    return _enrich_one(cfg, _enrich_session(), listing)
+
+
 def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: List[Pair],
                 progress_total: int = 0, progress_offset: int = 0) -> List[Pair]:
     """Enrich new Kleinanzeigen listings from their detail page, then re-filter (B2).
 
-    Fetches each new (not-yet-seen) KA listing's detail page once — spaced by
-    PER_REQUEST_DELAY_S — to capture the full description and all detail
-    attributes (bedrooms, bathrooms, floor, type, Verfügbar ab, Nebenkosten,
-    Warmmiete, Kaution, feature tags), and to fill any missing price/rooms/sqm.
-    Listings that fall out of their search's criteria once their real values are
-    known are dropped here. ``progress_total``/``progress_offset`` drive a periodic
-    "enriching X/N" log for large backlogs.
+    Fetches each new (not-yet-seen) KA listing's detail page once to capture the
+    full description and all detail attributes (bedrooms, bathrooms, floor, type,
+    Verfügbar ab, Nebenkosten, Warmmiete, Kaution, feature tags) and to fill any
+    missing price/rooms/sqm. Listings that fall out of their search's criteria once
+    their real values are known are dropped here. ``progress_total``/
+    ``progress_offset`` drive a periodic "enriching X/N" log for large backlogs.
+
+    Detail fetches run ``ENRICH_CONCURRENCY`` at a time (default 4), each worker
+    spaced by ``ENRICH_DELAY_S``; set ``ENRICH_CONCURRENCY=1`` for the strictly
+    sequential path. Non-Kleinanzeigen listings are passed through untouched.
     """
-    enriched_count = 0
     total = progress_total or len(new_pairs)
-    for idx, (listing, _criteria) in enumerate(new_pairs):
-        if listing.source != "kleinanzeigen":
-            continue
-        try:
-            fields = sources.fetch_kleinanzeigen_detail(
-                listing.url,
-                user_agent=cfg.user_agent,
-                timeout=cfg.http_timeout_s,
-                max_retries=cfg.max_retries,
-                session=session,
-            )
-            sources.enrich_listing(listing, fields)
-            if fields:
-                enriched_count += 1
-        except sources.FetchError as exc:
-            run.event("fetch_source", level="warning", message=f"enrich failed: {exc}", source=listing.url)
-        except Exception as exc:  # enrichment is best-effort, never fatal
-            log.warning("Detail enrichment failed for %s: %s", listing.url, exc)
-        done = progress_offset + idx + 1
+    to_enrich = [listing for (listing, _c) in new_pairs if listing.source == "kleinanzeigen"]
+    enriched_count = 0
+
+    def _account(listing: Listing, result: Tuple[str, Optional[str]], done: int) -> None:
+        nonlocal enriched_count
+        status, detail = result
+        if status == "enriched":
+            enriched_count += 1
+        elif status == "fetcherror":
+            run.event("fetch_source", level="warning", message=f"enrich failed: {detail}", source=listing.url)
+        elif status == "error":
+            log.warning("Detail enrichment failed for %s: %s", listing.url, detail)
         if total > 10 and done % 10 == 0:
             log.info("enrich: fetched detail pages for %d/%d listing(s)…", done, total)
-        sources.polite_pause(cfg.per_request_delay_s, cfg.request_jitter_s)
+
+    if cfg.enrich_concurrency <= 1 or len(to_enrich) <= 1:
+        for idx, listing in enumerate(to_enrich, start=1):
+            _account(listing, _enrich_one(cfg, session, listing), progress_offset + idx)
+    else:
+        workers = min(cfg.enrich_concurrency, len(to_enrich))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="enrich") as pool:
+            futures = {pool.submit(_enrich_worker, cfg, listing): listing for listing in to_enrich}
+            for done, fut in enumerate(concurrent.futures.as_completed(futures), start=1):
+                listing = futures[fut]
+                _account(listing, fut.result(), progress_offset + done)
 
     refiltered = [(l, c) for (l, c) in new_pairs if matches(l, c)]
     run.event(

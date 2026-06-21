@@ -237,7 +237,10 @@ touched its status yet** (still `new`); any status you set by hand — and any o
 notes — is left untouched.
 
 Tip: set `ENRICH_DETAIL=true` so listings missing price/rooms/sqm on the search
-card are filled from their detail page before being written.
+card are filled from their detail page before being written. Enrichment fetches
+`ENRICH_CONCURRENCY` detail pages at a time (default 4, each spaced by
+`ENRICH_DELAY_S`), which cuts a large first run from ~40 min to a few minutes;
+lower `ENRICH_CONCURRENCY` toward `1` if Kleinanzeigen starts 403-blocking.
 
 ### Table: `flatwatch_runs` — `NOCODB_RUNS_TABLE_ID`
 

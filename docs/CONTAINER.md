@@ -218,6 +218,8 @@ numeric bound — the filter biases toward false positives over missed flats.
 | `HTTP_MAX_RETRIES` | `3` | Retries on 5xx/timeout (2s, 4s, 8s backoff); **403 is never retried**. |
 | `KA_MAX_PAGES` | `20` | Walk Kleinanzeigen result pages (`seite:2,3,…`) up to this many, stopping early at the first empty or repeated page. `1` = first page only. |
 | `ENRICH_DETAIL` | `false` | Fetch each new KA detail page for the full description + all detail fields (bedrooms, bathrooms, floor, type, Verfügbar ab, Nebenkosten, Warmmiete, Kaution, feature tags), then re-filter. |
+| `ENRICH_CONCURRENCY` | `4` | How many detail pages to fetch **at once** during enrichment (`1` = strictly sequential). The big lever on first-run speed (~40 min → ~5 min for ~700 listings). Lower toward `1` if Kleinanzeigen 403-blocks. |
+| `ENRICH_DELAY_S` | `0.5` | Per-worker pause between detail fetches during enrichment. Shorter than `PER_REQUEST_DELAY_S`, which still governs the slower search-result pages. |
 | `RECHECK_ENABLED` | `true` | Daily re-check of results-table listings; flags removed ads as `available=false`. Requires `NOCODB_LISTINGS_TABLE_ID`. |
 | `RECHECK_INTERVAL_DAYS` | `1` | Days between availability rechecks. |
 
