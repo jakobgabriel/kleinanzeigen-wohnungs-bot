@@ -56,11 +56,20 @@ def test_write_bulk_payload_with_full_fields(tmp_path):
     row = rows[0]
     assert set(row) >= {
         "listing_id", "title", "url", "source", "price", "rooms", "sqm",
-        "location", "description", "first_seen",
+        "location", "description", "first_seen", "search_type", "status",
     }
     assert row["listing_id"] == "kleinanzeigen:1"
     assert row["price"] == 901 and row["sqm"] == 60
     assert row["first_seen"]
+    assert row["status"] == "new"  # lifecycle starts at "new"; user edits it after
+
+
+def test_write_includes_search_type(tmp_path):
+    sess = FakeSession()
+    lst = _listing(1)
+    lst.search_type = "buy-house"
+    ResultsSink(_cfg(tmp_path), session=sess).write([lst])
+    assert sess.posts[0]["rows"][0]["search_type"] == "buy-house"
 
 
 def test_write_includes_rich_detail_and_availability_fields(tmp_path):

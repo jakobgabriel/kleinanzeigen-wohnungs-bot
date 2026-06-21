@@ -82,6 +82,9 @@ class Listing:
     location: Optional[str] = None
     description: Optional[str] = None
     thumbnail: Optional[str] = None
+    # Classification of the search this listing came from (rent/buy · flat/house/
+    # land). Informational; set from the search and written to the results table.
+    search_type: str = ""
     # Extra attributes parsed from the detail page (bedrooms, bathrooms, floor,
     # apartment_type, available_from, additional_costs, warm_rent, deposit).
     details: dict = field(default_factory=dict)

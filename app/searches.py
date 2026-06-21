@@ -41,8 +41,16 @@ COL_MAX_SQM = "max_sqm"
 COL_REQUIRED_KEYWORDS = "required_keywords"
 COL_EXCLUDED_KEYWORDS = "excluded_keywords"
 COL_RADIUS_KM = "radius_km"
+COL_SEARCH_TYPE = "search_type"
 
 _NOCODB_PAGE = 200
+
+# What a search looks for. Purely a user-facing classification, carried through to
+# the results table so flats/houses/land (to rent or to buy) can be filtered there.
+# The Kleinanzeigen URL still determines the actual category that is scraped.
+VALID_SEARCH_TYPES = (
+    "rent-flat", "buy-flat", "rent-house", "buy-house", "rent-room", "buy-land", "other",
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +59,8 @@ class Search:
 
     ``radius_km`` is the Umkreissuche radius for Kleinanzeigen searches (include
     listings within that many km of the town); ``None`` means no radius applied.
+    ``search_type`` classifies what the search looks for (rent/buy · flat/house/
+    land); it is informational and flows through to each result row.
     """
 
     url: str
@@ -59,6 +69,7 @@ class Search:
     enabled: bool = True
     label: str = ""
     radius_km: Optional[float] = None
+    search_type: str = ""
 
 
 def _to_float(value) -> Optional[float]:
@@ -96,10 +107,13 @@ class SearchProvider:
 
     # ----- env fallback ----------------------------------------------------- #
     def env_searches(self) -> List[Search]:
-        """Build searches from the static env vars + global criteria."""
+        """Build searches from the static env vars + global criteria.
+
+        Per-search extras (Umkreissuche radius, search_type) live only in the
+        NocoDB searches table, so env-var searches carry neither.
+        """
         crit = self.cfg.criteria
-        radius = self.cfg.ka_default_radius_km
-        searches = [Search(u, "kleinanzeigen", crit, radius_km=radius) for u in self.cfg.ka_urls]
+        searches = [Search(u, "kleinanzeigen", crit) for u in self.cfg.ka_urls]
         searches += [Search(u, "rss", crit) for u in self.cfg.rss_urls]
         return searches
 
@@ -158,15 +172,16 @@ class SearchProvider:
         if source_type not in VALID_SOURCE_TYPES:
             # Infer from the URL when the column is blank/unknown.
             source_type = "kleinanzeigen" if "kleinanzeigen" in url.lower() else "rss"
-        radius = _to_float(row.get(COL_RADIUS_KM))
+        search_type = (row.get(COL_SEARCH_TYPE) or "").strip().lower()
         return Search(
             url=url,
             source_type=source_type,
             criteria=self._merged_criteria(row),
             enabled=_to_bool(row.get(COL_ENABLED)),
             label=(row.get(COL_LABEL) or "").strip(),
-            # Blank radius cell inherits the global KA_DEFAULT_RADIUS_KM default.
-            radius_km=radius if radius is not None else self.cfg.ka_default_radius_km,
+            # Umkreissuche radius is per-search only (blank = no radius applied).
+            radius_km=_to_float(row.get(COL_RADIUS_KM)),
+            search_type=search_type,
         )
 
     # ----- public ----------------------------------------------------------- #

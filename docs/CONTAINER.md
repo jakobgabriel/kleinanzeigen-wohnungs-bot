@@ -217,7 +217,6 @@ numeric bound — the filter biases toward false positives over missed flats.
 | `HTTP_TIMEOUT_S` | `20` | Per-request timeout. |
 | `HTTP_MAX_RETRIES` | `3` | Retries on 5xx/timeout (2s, 4s, 8s backoff); **403 is never retried**. |
 | `KA_MAX_PAGES` | `20` | Walk Kleinanzeigen result pages (`seite:2,3,…`) up to this many, stopping early at the first empty or repeated page. `1` = first page only. |
-| `KA_DEFAULT_RADIUS_KM` | _(unset)_ | **Umkreissuche**: default search radius in km around each Kleinanzeigen town (appends an `r<km>` suffix to the location code, e.g. `…/erfurt/c203l3741` → `…r50`). Per-search rows can override via a `radius_km` cell. Blank = no radius. |
 | `ENRICH_DETAIL` | `false` | Fetch each new KA detail page for the full description + all detail fields (bedrooms, bathrooms, floor, type, Verfügbar ab, Nebenkosten, Warmmiete, Kaution, feature tags), then re-filter. |
 | `RECHECK_ENABLED` | `true` | Daily re-check of results-table listings; flags removed ads as `available=false`. Requires `NOCODB_LISTINGS_TABLE_ID`. |
 | `RECHECK_INTERVAL_DAYS` | `1` | Days between availability rechecks. |

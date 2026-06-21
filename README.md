@@ -166,21 +166,27 @@ remain the fallback).
 | `enabled` | Checkbox | Row is polled only when true (blank = true). |
 | `label` | SingleLineText | Friendly name (optional). |
 | `source_type` | SingleLineText | `kleinanzeigen` or `rss`; inferred from the URL if blank. |
+| `search_type` | SingleSelect | What the search looks for: `rent-flat`, `buy-flat`, `rent-house`, `buy-house`, `rent-room`, `buy-land`, `other`. Classification only; carried onto each result row. |
 | `url` | URL / SingleLineText | The KA search URL or RSS feed URL (required). |
+| `radius_km` | Number | **Umkreissuche**: search radius in km around the town (Kleinanzeigen only). Blank = exact location, no radius. |
 | `min_rent` / `max_rent` | Number | Blank → inherit global `MIN_RENT`/`MAX_RENT`. |
 | `min_rooms` / `max_rooms` | Number | Blank → inherit global. |
 | `min_sqm` / `max_sqm` | Number | Blank → inherit global. |
 | `required_keywords` | SingleLineText | Comma-separated; blank → inherit global. |
 | `excluded_keywords` | SingleLineText | Comma-separated; blank → inherit global. |
-| `radius_km` | Number | **Umkreissuche**: search radius in km around the town (Kleinanzeigen only); blank → inherit global `KA_DEFAULT_RADIUS_KM`. |
 
-**Umkreissuche (radius search):** for a Kleinanzeigen search, set `radius_km` to
-also surface flats in the surrounding area, not just the exact town. flatwatch
+**Rent or buy, flat / house / land.** flatwatch works on any Kleinanzeigen search
+URL — point a row's `url` at the category you want (a rental flat, a house for
+sale, a plot of land, …) and tag it with the matching `search_type` so you can
+filter results by what kind of home it is. The pipeline (filter → dedup → notify →
+store) is the same for all of them.
+
+**Umkreissuche (radius search).** Set `radius_km` on a Kleinanzeigen row to also
+surface listings in the surrounding area, not just the exact town. flatwatch
 appends Kleinanzeigen's `r<km>` suffix to the location code (e.g.
-`…/erfurt/c203l3741` → `…/erfurt/c203l3741r50` for 50 km). Set it per-row in the
-searches table, or globally for all KA searches via `KA_DEFAULT_RADIUS_KM`; a row
-value overrides the global default, `0` forces "no radius", and any radius already
-encoded in the URL is normalised to the requested value.
+`…/erfurt/c203l3741` → `…/erfurt/c203l3741r50` for 50 km). It is configured
+**per-search in this table only** (there is no env var); `0` forces "no radius",
+and any radius already encoded in the URL is normalised to the cell's value.
 
 **Resilience:** if the table is unreachable, flatwatch reuses the last-known-good
 list it read; if there is none (or the table is empty / all-disabled) it falls
@@ -200,6 +206,8 @@ cycle. Writing is best-effort and never blocks a cycle.
 | `title` | SingleLineText | |
 | `url` | URL / SingleLineText | |
 | `source` | SingleLineText | `kleinanzeigen` / `rss`. |
+| `search_type` | SingleSelect | Copied from the search that found it (`rent-flat`, `buy-house`, …) so you can filter by home type. |
+| `status` | SingleSelect | **Lifecycle you track by hand**: `new`, `reviewing`, `interested`, `contacted`, `viewing-scheduled`, `viewed`, `applied`, `accepted`, `rejected`, `not-considered`, `archived`. flatwatch sets `new` on insert and **never overwrites it** — edit it freely. |
 | `price` | Decimal | Nullable. |
 | `rooms` | Decimal | Nullable. |
 | `sqm` | Decimal | Nullable. |
@@ -224,6 +232,8 @@ The detail columns (`description`, `bedrooms` … `features`) are filled when
 **availability** columns are maintained by a **daily recheck** (`RECHECK_ENABLED`,
 default on): it re-fetches each still-available Kleinanzeigen listing and flags
 removed ones (404 or "nicht mehr verfügbar") as `available=false` + `removed_at`.
+The recheck only touches the availability columns, so your hand-edited `status`
+(and any other notes) are left untouched.
 
 Tip: set `ENRICH_DETAIL=true` so listings missing price/rooms/sqm on the search
 card are filled from their detail page before being written.

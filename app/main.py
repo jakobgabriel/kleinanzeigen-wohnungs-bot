@@ -117,7 +117,9 @@ def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, ru
                     max_retries=cfg.max_retries,
                     session=session,
                 )
-            pairs.extend((listing, search.criteria) for listing in found)
+            for listing in found:
+                listing.search_type = search.search_type  # classify for the results table
+                pairs.append((listing, search.criteria))
             run.event("fetch_source", message="ok", source=search.url, count=len(found))
         except sources.FetchError as exc:
             run.source_failed(search.url, str(exc), blocked=getattr(exc, "blocked", False))
@@ -477,7 +479,7 @@ def main() -> int:
         get_status=health_snapshot,
         list_searches=lambda: [
             {"label": s.label, "url": s.url, "source_type": s.source_type,
-             "enabled": s.enabled, "radius_km": s.radius_km}
+             "enabled": s.enabled, "radius_km": s.radius_km, "search_type": s.search_type}
             for s in search_provider.get_searches()
         ],
     )

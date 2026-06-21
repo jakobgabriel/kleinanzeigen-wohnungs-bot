@@ -28,6 +28,11 @@ log = logging.getLogger("flatwatch.results")
 # NocoDB caps bulk inserts around 1000 rows per request.
 _NOCODB_BULK = 1000
 
+# Lifecycle status stamped on a row when it is first inserted. The user owns the
+# column thereafter (flatwatch only inserts new rows and the availability recheck
+# patches availability fields), so a hand-edited status is never overwritten.
+_INITIAL_STATUS = "new"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -59,6 +64,10 @@ class ResultsSink:
             "title": listing.title,
             "url": listing.url,
             "source": listing.source,
+            # What kind of search found it (rent/buy · flat/house/land), and the
+            # lifecycle status the user then tracks by hand in NocoDB.
+            "search_type": listing.search_type or None,
+            "status": _INITIAL_STATUS,
             "price": listing.price,
             "rooms": listing.rooms,
             "sqm": listing.sqm,
