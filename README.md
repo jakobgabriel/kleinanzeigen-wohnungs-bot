@@ -59,6 +59,10 @@ TELEGRAM_CHAT_ID=987654
 At least one of `KA_SEARCH_URLS` / `RSS_URLS` is required; with no notification
 channel configured, matches are only logged.
 
+**Portainer / Synology:** deploy a *Repository* stack pointing at
+`docker-compose.portainer.yml` and set your variables in Portainer's *Environment
+variables* panel — full walkthrough in [docs/CONTAINER.md §3.3](docs/CONTAINER.md#33-synology--portainer-git-repository-stack).
+
 ### Multiple search areas (per-source overrides)
 
 Encode each area in its own Kleinanzeigen search URL and list them all — the

@@ -101,6 +101,7 @@ docker compose logs -f flatwatch
 The bundled `docker-compose.yml` sets a named `flatwatch-data` volume, the health
 port, `restart: unless-stopped`, and reads everything else from `.env`. Override
 the build version with `APP_VERSION=$(git rev-parse --short HEAD) docker compose build`.
+(For Portainer, use `docker-compose.portainer.yml` instead — see §3.3.)
 
 ### 3.2 docker run
 
@@ -113,19 +114,42 @@ docker run -d --name flatwatch --restart unless-stopped \
   flatwatch:latest
 ```
 
-### 3.3 Synology / Portainer
+### 3.3 Synology / Portainer (Git repository stack)
 
-1. **Build/transfer the image.** Either build a multi-arch image elsewhere and
-   `docker pull` it on the NAS, or use Portainer's *Images → Build*.
-2. **Stacks → Add stack.** Paste `docker-compose.yml`, then add your variables in
-   the *Environment variables* panel (or upload `.env`). The named volume
-   `flatwatch-data` persists across container recreation and image updates.
-3. **Deploy the stack.** Watch *Logs* for the `flatwatch starting:` line and the
-   first `cycle_complete` summary.
-4. If your NAS is ARM, ensure you deployed the `arm64` image.
+No image is published, so the simplest path is a **Repository stack**: Portainer
+clones this repo and builds the image on the NAS. Use
+**`docker-compose.portainer.yml`** (not `docker-compose.yml`) — it has no
+`env_file` and maps the full config surface via `${VAR}` interpolation, so the
+Portainer *Environment variables* panel is what configures the container.
+
+1. **Stacks → Add stack**, name it `flatwatch`. Build method: **Repository**.
+2. Fill in the repository:
+   - **Repository URL:** `https://github.com/jakobgabriel/kleinanzeigen-wohnungs-bot`
+   - **Repository reference:** `refs/heads/claude/flatwatch-build-spec-vjbfe9`
+     (or `refs/heads/main` once merged)
+   - **Compose path:** `docker-compose.portainer.yml`
+   - *Authentication:* only needed if the repo is private (use a GitHub PAT).
+3. **Environment variables → Advanced mode:** paste your filled-in
+   `.env.example` contents (`KEY=VALUE` lines). Set at least one source and one
+   notification channel — plus the NocoDB ids if you use it. Blank/omitted vars
+   fall back to the app defaults.
+4. **Deploy the stack.** The first build compiles dependencies (a couple of
+   minutes), then it's cached. An ARM NAS needs nothing special — the
+   `python:3.12-slim` base is multi-arch and builds for your CPU automatically.
+5. **Verify** in *Logs*: `flatwatch starting: …` then, after the first cycle,
+   `cycle_complete … status=success`. Hit `http://<nas-ip>:8080/health` → `200`
+   with JSON; Portainer shows the container `healthy`.
+6. **Updating:** open the stack → **Pull and redeploy** (re-clones + rebuilds), or
+   enable Portainer's GitOps auto-update (polling or webhook) to redeploy on new
+   commits. The `flatwatch-data` volume persists across redeploys, so you won't
+   get duplicate alerts.
 
 > The first cycle **primes silently** — it records existing listings as seen
 > without notifying — so you will not get a backlog of alerts on first boot.
+
+**Troubleshooting:** if the container exits with `FATAL: no sources configured`,
+the panel variables didn't reach the container — make sure they're set under
+*Environment variables* (Advanced mode) and redeploy.
 
 ---
 
