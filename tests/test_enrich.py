@@ -30,6 +30,21 @@ def test_parse_detail_extracts_fields():
     assert "provisionsfrei" in fields["description"].lower()
 
 
+def test_parse_detail_extracts_full_attributes():
+    f = _parse_kleinanzeigen_detail(_detail_html())
+    assert f["bedrooms"] == 2.0
+    assert f["bathrooms"] == 1.0
+    assert f["floor"] == "3"
+    assert f["apartment_type"] == "Etagenwohnung"
+    assert f["available_from"] == "Juli 2026"
+    assert f["additional_costs"] == 180.0
+    assert f["warm_rent"] == 1360.0
+    assert f["deposit"] == "2.360 €"
+    assert f["features"] == ["Balkon", "Einbauküche", "Keller"]
+    # "Schlafzimmer"/"Badezimmer" must not be mis-parsed as rooms.
+    assert f["rooms"] == 2.5
+
+
 def test_parse_detail_on_garbage_returns_empty():
     assert _parse_kleinanzeigen_detail("<html><body>nope</body></html>") == {}
 
@@ -45,6 +60,19 @@ def test_enrich_fills_only_missing():
     assert lst.rooms == 2.0
     assert lst.sqm == 45.0  # known value is never overwritten
     assert lst._missing == ()
+
+
+def test_enrich_sets_details_features_and_full_description():
+    lst = Listing.create(source="kleinanzeigen", title="WG", url="https://x/1", native_id="1",
+                         price=900, description="short snippet…", _missing=())
+    enrich_listing(lst, _parse_kleinanzeigen_detail(_detail_html()))
+    assert lst.details["bedrooms"] == 2.0
+    assert lst.details["warm_rent"] == 1360.0
+    assert lst.details["floor"] == "3"
+    assert lst.details["apartment_type"] == "Etagenwohnung"
+    assert "Balkon" in lst.features and "Keller" in lst.features
+    assert "voller beschreibungstext" in lst.description.lower()  # full text replaces snippet
+    assert lst.price == 900  # card price kept (detail price not overwritten)
 
 
 # ----- cycle integration --------------------------------------------------- #
@@ -134,15 +162,23 @@ def test_enrichment_drops_now_overbudget(tmp_path, monkeypatch):
     assert stats["new_count"] == 0
 
 
-def test_enrichment_skips_already_complete(tmp_path, monkeypatch):
+def test_enrichment_fetches_all_new_listings_for_full_details(tmp_path, monkeypatch):
+    # Even a card with price/rooms/sqm present is enriched, to capture the full
+    # description + detail attributes (bedrooms, floor, Warmmiete, features, …).
     listing = Listing.create(source="kleinanzeigen", title="WG", url="https://ka/ad/1",
                              native_id="1", price=900, rooms=2, sqm=60, _missing=())
     monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", lambda u, **k: [listing])
     monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
     calls = []
-    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen_detail", lambda u, **k: calls.append(u) or {})
+    monkeypatch.setattr(
+        main_mod.sources, "fetch_kleinanzeigen_detail",
+        lambda u, **k: calls.append(u) or {"bedrooms": 2.0, "features": ["Balkon"], "description": "full"},
+    )
 
     cfg, store, notifier, rl = _wire(tmp_path)
     monkeypatch.setattr(notifier, "notify", lambda l: _Result())
     main_mod.run_cycle(cfg, store, notifier, rl, DummySession(), prime=False)
-    assert calls == []  # nothing missing -> no detail fetch
+    assert calls == ["https://ka/ad/1"]            # detail fetched even though complete
+    assert listing.details.get("bedrooms") == 2.0  # rich fields captured
+    assert listing.features == ["Balkon"]
+    assert listing.description == "full"

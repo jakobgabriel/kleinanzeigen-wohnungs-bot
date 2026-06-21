@@ -16,10 +16,12 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import date
 from typing import List, Optional, Tuple
 
 import requests
 
+from .availability import AvailabilityChecker
 from .config import Config, Criteria, load_config
 from .filters import matches
 from .health import snapshot as health_snapshot, start_health_server, write_health
@@ -132,16 +134,18 @@ def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, ru
 
 
 def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: List[Pair]) -> List[Pair]:
-    """Enrich Kleinanzeigen listings missing price/rooms/sqm, then re-filter (B2).
+    """Enrich new Kleinanzeigen listings from their detail page, then re-filter (B2).
 
-    Only new (not-yet-seen) listings reach here, so a detail page is never
-    fetched for an already-seen id. Each detail page is fetched at most once,
-    spaced by PER_REQUEST_DELAY_S. Listings that fall out of their search's
-    criteria once their real values are known are dropped here.
+    Fetches each new (not-yet-seen) KA listing's detail page once — spaced by
+    PER_REQUEST_DELAY_S — to capture the full description and all detail
+    attributes (bedrooms, bathrooms, floor, type, Verfügbar ab, Nebenkosten,
+    Warmmiete, Kaution, feature tags), and to fill any missing price/rooms/sqm.
+    Listings that fall out of their search's criteria once their real values are
+    known are dropped here.
     """
     enriched_count = 0
     for listing, _criteria in new_pairs:
-        if listing.source != "kleinanzeigen" or not listing._missing:
+        if listing.source != "kleinanzeigen":
             continue
         try:
             fields = sources.fetch_kleinanzeigen_detail(
@@ -151,9 +155,8 @@ def _enrich_new(cfg: Config, session: requests.Session, run: Run, new_pairs: Lis
                 max_retries=cfg.max_retries,
                 session=session,
             )
-            before = listing._missing
             sources.enrich_listing(listing, fields)
-            if listing._missing != before:
+            if fields:
                 enriched_count += 1
         except sources.FetchError as exc:
             run.event("fetch_source", level="warning", message=f"enrich failed: {exc}", source=listing.url)
@@ -420,6 +423,7 @@ def main() -> int:
     runlogger = RunLogger(cfg, session=session)
     search_provider = SearchProvider(cfg, session=session)
     results = ResultsSink(cfg, session=session)
+    checker = AvailabilityChecker(cfg, session=session)
 
     store.schema_check()
     if cfg.searches_from_nocodb:
@@ -445,6 +449,7 @@ def main() -> int:
     first = True
     manual = False
     state = CycleState()
+    last_recheck: Optional[date] = None
     while not _STOP:
         try:
             trigger = "manual" if manual else None
@@ -458,6 +463,14 @@ def main() -> int:
         first = False
         manual = False
 
+        # Daily availability recheck: tag removed listings as unavailable.
+        if checker.enabled and _recheck_due(last_recheck, cfg.recheck_interval_days):
+            try:
+                checker.run()
+            except Exception:  # observational — never break the loop
+                log.exception("Availability recheck failed; continuing.")
+            last_recheck = date.today()
+
         if _STOP:
             break
         # Wake early for an on-demand manual cycle (SIGUSR1); otherwise sleep the interval.
@@ -467,6 +480,13 @@ def main() -> int:
 
     log.info("flatwatch stopped.")
     return 0
+
+
+def _recheck_due(last_recheck: Optional[date], interval_days: int) -> bool:
+    """True if the availability recheck should run now (first time, or interval elapsed)."""
+    if last_recheck is None:
+        return True
+    return (date.today() - last_recheck).days >= interval_days
 
 
 def _sleep_interval(poll_interval_min: int) -> bool:

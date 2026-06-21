@@ -63,6 +63,23 @@ def test_write_bulk_payload_with_full_fields(tmp_path):
     assert row["first_seen"]
 
 
+def test_write_includes_rich_detail_and_availability_fields(tmp_path):
+    sess = FakeSession()
+    lst = _listing(1)
+    lst.details = {"bedrooms": 2.0, "bathrooms": 1.0, "floor": "3", "warm_rent": 1360.0,
+                   "apartment_type": "Etagenwohnung", "available_from": "Juli 2026",
+                   "additional_costs": 180.0, "deposit": "2.360 €"}
+    lst.features = ["Balkon", "Keller"]
+    ResultsSink(_cfg(tmp_path), session=sess).write([lst])
+    row = sess.posts[0]["rows"][0]
+    assert row["bedrooms"] == 2.0 and row["bathrooms"] == 1.0 and row["floor"] == "3"
+    assert row["warm_rent"] == 1360.0 and row["additional_costs"] == 180.0
+    assert row["apartment_type"] == "Etagenwohnung" and row["available_from"] == "Juli 2026"
+    assert row["deposit"] == "2.360 €"
+    assert row["features"] == "Balkon, Keller"
+    assert row["available"] is True and row["last_checked"]
+
+
 def test_noop_when_table_id_unset(tmp_path):
     cfg = make_config(json_store_path=str(tmp_path / "seen.json"))  # no listings table id
     sess = FakeSession()

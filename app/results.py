@@ -53,6 +53,7 @@ class ResultsSink:
 
     @staticmethod
     def _payload(listing: Listing, first_seen: str) -> dict:
+        d = listing.details or {}
         return {
             "listing_id": listing.listing_id,
             "title": listing.title,
@@ -63,6 +64,19 @@ class ResultsSink:
             "sqm": listing.sqm,
             "location": listing.location,
             "description": listing.description,
+            # Rich detail attributes (populated when ENRICH_DETAIL=true).
+            "bedrooms": d.get("bedrooms"),
+            "bathrooms": d.get("bathrooms"),
+            "floor": d.get("floor"),
+            "apartment_type": d.get("apartment_type"),
+            "available_from": d.get("available_from"),
+            "additional_costs": d.get("additional_costs"),
+            "warm_rent": d.get("warm_rent"),
+            "deposit": d.get("deposit"),
+            "features": ", ".join(listing.features) if listing.features else None,
+            # Availability tracking (the daily recheck flips these).
+            "available": True,
+            "last_checked": first_seen,
             "first_seen": first_seen,
         }
 

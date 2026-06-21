@@ -82,6 +82,11 @@ class Listing:
     location: Optional[str] = None
     description: Optional[str] = None
     thumbnail: Optional[str] = None
+    # Extra attributes parsed from the detail page (bedrooms, bathrooms, floor,
+    # apartment_type, available_from, additional_costs, warm_rent, deposit).
+    details: dict = field(default_factory=dict)
+    # Feature/checklist tags from the detail page (e.g. Balkon, Einbauküche).
+    features: list = field(default_factory=list)
     # Attributes still missing after list-card parsing; used by detail enrichment.
     _missing: tuple = field(default=(), repr=False)
 

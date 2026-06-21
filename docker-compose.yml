@@ -39,6 +39,8 @@ services:
       KA_MAX_PAGES: ${KA_MAX_PAGES:-}
       USER_AGENT: ${USER_AGENT:-}
       ENRICH_DETAIL: ${ENRICH_DETAIL:-}
+      RECHECK_ENABLED: ${RECHECK_ENABLED:-}
+      RECHECK_INTERVAL_DAYS: ${RECHECK_INTERVAL_DAYS:-}
       # --- Dedup store (NocoDB primary, JSON fallback) ---
       NOCODB_URL: ${NOCODB_URL:-}
       NOCODB_TOKEN: ${NOCODB_TOKEN:-}

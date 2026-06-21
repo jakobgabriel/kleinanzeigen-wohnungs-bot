@@ -195,8 +195,26 @@ cycle. Writing is best-effort and never blocks a cycle.
 | `rooms` | Decimal | Nullable. |
 | `sqm` | Decimal | Nullable. |
 | `location` | SingleLineText | Nullable. |
-| `description` | LongText | Nullable. |
+| `description` | LongText | Full description text (with `ENRICH_DETAIL=true`). |
+| `bedrooms` | Number | Schlafzimmer (with `ENRICH_DETAIL`). |
+| `bathrooms` | Number | Badezimmer. |
+| `floor` | SingleLineText | Etage. |
+| `apartment_type` | SingleLineText | Wohnungstyp. |
+| `available_from` | SingleLineText | Verfügbar ab. |
+| `additional_costs` | Decimal | Nebenkosten. |
+| `warm_rent` | Decimal | Warmmiete. |
+| `deposit` | SingleLineText | Kaution / Genoss.-Anteile. |
+| `features` | LongText | Checklist tags, comma-separated (Balkon, Einbauküche, …). |
 | `first_seen` | DateTime | When flatwatch first recorded it. |
+| `available` | Checkbox | `true` on insert; the daily recheck sets it `false` when the ad is gone. |
+| `last_checked` | DateTime | Last time the recheck verified the listing. |
+| `removed_at` | DateTime | Set when the recheck found the listing removed. |
+
+The detail columns (`description`, `bedrooms` … `features`) are filled when
+`ENRICH_DETAIL=true` (every new KA listing's detail page is fetched once). The
+**availability** columns are maintained by a **daily recheck** (`RECHECK_ENABLED`,
+default on): it re-fetches each still-available Kleinanzeigen listing and flags
+removed ones (404 or "nicht mehr verfügbar") as `available=false` + `removed_at`.
 
 Tip: set `ENRICH_DETAIL=true` so listings missing price/rooms/sqm on the search
 card are filled from their detail page before being written.

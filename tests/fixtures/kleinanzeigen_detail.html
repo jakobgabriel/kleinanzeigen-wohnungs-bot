@@ -1,6 +1,7 @@
 <!--
   Representative Kleinanzeigen detail-page markup, trimmed to the structure the
-  enrichment parser depends on (price box + addetailslist + description).
+  enrichment parser depends on (price box + addetailslist + checklisttags +
+  full description).
 -->
 <!DOCTYPE html>
 <html lang="de">
@@ -16,10 +17,36 @@
         Zimmer <span class="addetailslist--detail--value">2,5</span>
       </li>
       <li class="addetailslist--detail">
+        Schlafzimmer <span class="addetailslist--detail--value">2</span>
+      </li>
+      <li class="addetailslist--detail">
+        Badezimmer <span class="addetailslist--detail--value">1</span>
+      </li>
+      <li class="addetailslist--detail">
         Etage <span class="addetailslist--detail--value">3</span>
       </li>
+      <li class="addetailslist--detail">
+        Wohnungstyp <span class="addetailslist--detail--value">Etagenwohnung</span>
+      </li>
+      <li class="addetailslist--detail">
+        Verfügbar ab <span class="addetailslist--detail--value">Juli 2026</span>
+      </li>
+      <li class="addetailslist--detail">
+        Nebenkosten <span class="addetailslist--detail--value">180 €</span>
+      </li>
+      <li class="addetailslist--detail">
+        Warmmiete <span class="addetailslist--detail--value">1.360 €</span>
+      </li>
+      <li class="addetailslist--detail">
+        Kaution / Genoss.-Anteile <span class="addetailslist--detail--value">2.360 €</span>
+      </li>
     </ul>
-    <p id="viewad-description-text">Gemütliche Altbauwohnung, provisionsfrei, ab sofort verfügbar.</p>
+    <ul class="checklist">
+      <li class="checklisttag">Balkon</li>
+      <li class="checklisttag">Einbauküche</li>
+      <li class="checklisttag">Keller</li>
+    </ul>
+    <p id="viewad-description-text">Gemütliche Altbauwohnung, provisionsfrei, ab sofort verfügbar. Voller Beschreibungstext.</p>
   </div>
 </body>
 </html>

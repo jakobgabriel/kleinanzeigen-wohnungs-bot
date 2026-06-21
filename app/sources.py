@@ -42,6 +42,19 @@ KA_DETAIL_PRICE_SELECTOR = "#viewad-price"
 KA_DETAIL_LIST_ITEM_SELECTOR = "li.addetailslist--detail"
 KA_DETAIL_VALUE_SELECTOR = "span.addetailslist--detail--value"
 KA_DETAIL_DESCRIPTION_SELECTOR = "#viewad-description-text"
+KA_DETAIL_CHECKLIST_SELECTOR = ".checklisttag"
+
+# Map of detail-list labels (exact, lower-cased) → (canonical key, numeric?).
+KA_DETAIL_FIELD_MAP = {
+    "wohnfläche": ("sqm", True),
+    "zimmer": ("rooms", True),
+    "schlafzimmer": ("bedrooms", True),
+    "badezimmer": ("bathrooms", True),
+    "etage": ("floor", False),
+    "wohnungstyp": ("apartment_type", False),
+    "nebenkosten": ("additional_costs", True),
+    "warmmiete": ("warm_rent", True),
+}
 
 # A 403 from Kleinanzeigen is a block, not a transient error — never retried.
 BLOCK_STATUS = 403
@@ -269,10 +282,13 @@ def _origin(url: str) -> str:
 # Detail-page enrichment (B2)
 # --------------------------------------------------------------------------- #
 def _parse_kleinanzeigen_detail(html: str) -> dict:
-    """Parse a KA detail page for price/rooms/sqm/description.
+    """Parse a KA detail page for the full set of listing attributes.
 
-    Returns a dict with whichever fields were found; missing ones are absent so
-    the caller fills only the gaps. Resilient: never raises on stale markup.
+    Returns a dict with whichever fields were found (``price``, ``sqm``,
+    ``rooms``, ``bedrooms``, ``bathrooms``, ``floor``, ``apartment_type``,
+    ``available_from``, ``additional_costs``, ``warm_rent``, ``deposit``,
+    ``features`` list, ``description``). Missing ones are absent. Resilient:
+    never raises on stale markup.
     """
     soup = BeautifulSoup(html, "html.parser")
     out: dict = {}
@@ -287,21 +303,34 @@ def _parse_kleinanzeigen_detail(html: str) -> dict:
         if not value_text:
             continue
         # The label is the li text minus the value span text.
-        label = (_text(item) or "").replace(value_text, "").strip().lower()
-        if ("wohnfläche" in label or "fläche" in label or "m²" in value_text.lower()) and "sqm" not in out:
-            num = parse_number(value_text)
-            if num is not None:
-                out["sqm"] = num
-        elif "zimmer" in label and "rooms" not in out:
-            num = parse_number(value_text)
-            if num is not None:
-                out["rooms"] = num
+        label = (_text(item) or "").replace(value_text, "").strip().rstrip(":").strip().lower()
+        mapped = KA_DETAIL_FIELD_MAP.get(label)
+        if mapped:
+            key, numeric = mapped
+            if key in out:
+                continue
+            out[key] = parse_number(value_text) if numeric else value_text
+        elif label.startswith("verfügbar") and "available_from" not in out:
+            out["available_from"] = value_text
+        elif label.startswith("kaution") and "deposit" not in out:
+            out["deposit"] = value_text
+
+    features = [t for t in (_text(tag) for tag in soup.select(KA_DETAIL_CHECKLIST_SELECTOR)) if t]
+    if features:
+        out["features"] = features
 
     desc = _text(soup.select_one(KA_DETAIL_DESCRIPTION_SELECTOR))
     if desc:
         out["description"] = desc
 
     return out
+
+
+# Extra (string/number) detail keys carried on ``Listing.details``.
+_DETAIL_EXTRA_KEYS = (
+    "bedrooms", "bathrooms", "floor", "apartment_type",
+    "available_from", "additional_costs", "warm_rent", "deposit",
+)
 
 
 def fetch_kleinanzeigen_detail(
@@ -326,16 +355,25 @@ def fetch_kleinanzeigen_detail(
 
 
 def enrich_listing(listing: Listing, fields: dict) -> Listing:
-    """Fill only the listing's missing (None) price/rooms/sqm from ``fields``.
+    """Fill the listing from detail-page ``fields``.
 
-    Mutates and returns the listing. Known fields are never overwritten —
-    enrichment only fills gaps. The ``_missing`` tuple is recomputed.
+    Mutates and returns the listing. Core numeric fields (price/rooms/sqm) are
+    only filled when missing (never overwrite a value from the card), but the
+    full description and the extra detail attributes (bedrooms, bathrooms, floor,
+    apartment_type, available_from, additional_costs, warm_rent, deposit) and the
+    feature tags are taken from the detail page. The ``_missing`` tuple is
+    recomputed.
     """
     for attr in ("price", "rooms", "sqm"):
         if getattr(listing, attr) is None and fields.get(attr) is not None:
             setattr(listing, attr, fields[attr])
-    if listing.description is None and fields.get("description"):
+    if fields.get("description"):  # prefer the full detail text over the card snippet
         listing.description = fields["description"]
+    for key in _DETAIL_EXTRA_KEYS:
+        if fields.get(key) is not None:
+            listing.details[key] = fields[key]
+    if fields.get("features"):
+        listing.features = list(fields["features"])
     listing._missing = tuple(
         name for name in ("price", "rooms", "sqm") if getattr(listing, name) is None
     )

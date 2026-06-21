@@ -124,6 +124,10 @@ class Config:
     enrich_detail: bool
     ka_max_pages: int
 
+    # Daily availability recheck (tags removed listings in the results table)
+    recheck_enabled: bool
+    recheck_interval_days: int
+
     # Dedup store
     json_store_path: str
     nocodb_url: Optional[str]
@@ -223,6 +227,8 @@ def load_config() -> Config:
         max_retries=_env_int("HTTP_MAX_RETRIES", 3),
         enrich_detail=_env_bool("ENRICH_DETAIL", False),
         ka_max_pages=max(1, _env_int("KA_MAX_PAGES", 20)),
+        recheck_enabled=_env_bool("RECHECK_ENABLED", True),
+        recheck_interval_days=max(1, _env_int("RECHECK_INTERVAL_DAYS", 1)),
         json_store_path=_env("JSON_STORE_PATH", "/data/seen.json"),
         nocodb_url=_env("NOCODB_URL"),
         nocodb_token=_env("NOCODB_TOKEN"),
