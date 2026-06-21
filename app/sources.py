@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from typing import Callable, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import feedparser
 import requests
@@ -106,7 +107,7 @@ def _text(node) -> Optional[str]:
     return text or None
 
 
-def _parse_kleinanzeigen(html: str, base_url: str = KA_BASE_URL) -> List[Listing]:
+def _parse_kleinanzeigen(html: str, base_url: str = KA_BASE_URL, warn_empty: bool = True) -> List[Listing]:
     """Parse a Kleinanzeigen search-results page into listings.
 
     Resilient by design (B1): a card missing price/rooms/sqm yields ``None`` for
@@ -156,7 +157,7 @@ def _parse_kleinanzeigen(html: str, base_url: str = KA_BASE_URL) -> List[Listing
             )
         )
 
-    if not listings:
+    if not listings and warn_empty:
         log.warning("0 cards parsed from Kleinanzeigen response — selectors may be stale.")
     return listings
 
@@ -176,6 +177,29 @@ def _extract_tags(card) -> Tuple[Optional[float], Optional[float]]:
     return rooms, sqm
 
 
+# Kleinanzeigen encodes the page as a "seite:N" path segment, inserted just
+# before the category code (e.g. .../erfurt/seite:3/c203l3741). Page 1 has none.
+_SEITE_RE = re.compile(r"^seite:\d+$")
+
+
+def ka_page_url(url: str, page: int) -> str:
+    """Return the KA search URL for a given 1-based page.
+
+    Strips any existing ``seite:N`` segment first (so a deep-linked URL still
+    paginates from the top), then inserts ``seite:N`` before the category segment
+    for pages > 1.
+    """
+    parsed = urlparse(url)
+    segs = [s for s in parsed.path.split("/") if s and not _SEITE_RE.match(s)]
+    if page > 1:
+        if segs and re.search(r"c\d", segs[-1]):
+            segs.insert(len(segs) - 1, f"seite:{page}")
+        else:
+            segs.append(f"seite:{page}")
+    new_path = "/" + "/".join(segs)
+    return urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, parsed.query, parsed.fragment))
+
+
 def fetch_kleinanzeigen(
     url: str,
     *,
@@ -184,17 +208,54 @@ def fetch_kleinanzeigen(
     max_retries: int = 3,
     session: Optional[requests.Session] = None,
     sleep: Callable[[float], None] = time.sleep,
+    max_pages: int = 1,
+    per_request_delay_s: float = 0.0,
+    request_jitter_s: float = 0.0,
 ) -> List[Listing]:
-    """Fetch and parse a single Kleinanzeigen search URL."""
-    resp = http_get(
-        url,
-        user_agent=user_agent,
-        timeout=timeout,
-        max_retries=max_retries,
-        session=session,
-        sleep=sleep,
-    )
-    return _parse_kleinanzeigen(resp.text, base_url=_origin(url))
+    """Fetch and parse a Kleinanzeigen search, walking pages until they run out.
+
+    Pagination has a *flexible end* (the page count is unknown): it stops at the
+    first page that yields no cards, or yields only listings already seen on an
+    earlier page (Kleinanzeigen serves the last/first page when you ask past the
+    end), or when ``max_pages`` is reached. Pages are spaced by the politeness
+    delay. A failure on page > 1 ends pagination gracefully with what we have; a
+    failure on page 1 propagates so the source is marked failed.
+    """
+    base = _origin(url)
+    listings: List[Listing] = []
+    seen_ids: set = set()
+
+    for page in range(1, max(1, max_pages) + 1):
+        page_url = ka_page_url(url, page)
+        try:
+            resp = http_get(
+                page_url,
+                user_agent=user_agent,
+                timeout=timeout,
+                max_retries=max_retries,
+                session=session,
+                sleep=sleep,
+            )
+        except (FetchError, requests.HTTPError) as exc:
+            if page == 1:
+                raise
+            log.info("Stopping pagination for %s at page %d: %s", url, page, exc)
+            break
+
+        page_listings = _parse_kleinanzeigen(resp.text, base_url=base, warn_empty=(page == 1))
+        fresh = [l for l in page_listings if l.listing_id not in seen_ids]
+        if not fresh:
+            break  # empty page or a repeat of earlier results → past the last page
+
+        seen_ids.update(l.listing_id for l in fresh)
+        listings.extend(fresh)
+
+        if page < max_pages:
+            polite_pause(per_request_delay_s, request_jitter_s, sleep)
+
+    if max_pages > 1:
+        log.info("Fetched %d listing(s) across up to %d page(s) from %s.", len(listings), max_pages, url)
+    return listings
 
 
 def _origin(url: str) -> str:

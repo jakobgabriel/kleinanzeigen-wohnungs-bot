@@ -159,3 +159,98 @@ def test_fetch_kleinanzeigen_uses_http_get(ka_html):
         "https://www.kleinanzeigen.de/s", user_agent="a", timeout=1, session=sess, sleep=lambda s: None
     )
     assert len(listings) == 4
+
+
+# --------------------------------------------------------------------------- #
+# Pagination (seite:N) with a flexible end
+# --------------------------------------------------------------------------- #
+_URL = "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/c203l3741"
+
+
+def _ka_page(ids):
+    cards = "".join(
+        f'<article class="aditem" data-adid="{i}"><div class="aditem-main">'
+        f'<div class="aditem-main--middle">'
+        f'<a class="ellipsis" href="/s-anzeige/x/{i}">Wohnung {i}</a>'
+        f'<p class="aditem-main--middle--price-shipping--price">900 €</p>'
+        f"</div></div></article>"
+        for i in ids
+    )
+    return f"<html><body><ul>{cards}</ul></body></html>"
+
+
+@pytest.mark.parametrize(
+    "page, expected",
+    [
+        (1, "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/c203l3741"),
+        (3, "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/seite:3/c203l3741"),
+    ],
+)
+def test_ka_page_url(page, expected):
+    assert sources.ka_page_url(_URL, page) == expected
+
+
+def test_ka_page_url_replaces_existing_seite():
+    deep = "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/seite:2/c203l3741"
+    assert sources.ka_page_url(deep, 4) == "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/seite:4/c203l3741"
+    assert sources.ka_page_url(deep, 1) == _URL  # page 1 strips the segment
+
+
+def test_ka_page_url_category_only():
+    assert (
+        sources.ka_page_url("https://www.kleinanzeigen.de/s-wohnung-mieten/c203", 2)
+        == "https://www.kleinanzeigen.de/s-wohnung-mieten/seite:2/c203"
+    )
+
+
+def test_fetch_paginates_until_empty_page():
+    sess = FakeSession([
+        FakeResponse(200, text=_ka_page([1, 2])),
+        FakeResponse(200, text=_ka_page([3, 4])),
+        FakeResponse(200, text=_ka_page([])),  # past the last page
+    ])
+    out = sources.fetch_kleinanzeigen(_URL, user_agent="a", timeout=1, session=sess, sleep=lambda s: None, max_pages=5)
+    assert [l.listing_id for l in out] == [f"kleinanzeigen:{i}" for i in (1, 2, 3, 4)]
+    assert sess.calls == 3
+
+
+def test_fetch_stops_when_page_repeats():
+    # KA serves the last page again when asked beyond the end → no new ids → stop.
+    sess = FakeSession([FakeResponse(200, text=_ka_page([1, 2])), FakeResponse(200, text=_ka_page([1, 2]))])
+    out = sources.fetch_kleinanzeigen(_URL, user_agent="a", timeout=1, session=sess, sleep=lambda s: None, max_pages=5)
+    assert [l.listing_id for l in out] == ["kleinanzeigen:1", "kleinanzeigen:2"]
+    assert sess.calls == 2
+
+
+def test_fetch_respects_max_pages_cap():
+    pages = [FakeResponse(200, text=_ka_page([i])) for i in range(1, 11)]
+    sess = FakeSession(pages)
+    out = sources.fetch_kleinanzeigen(_URL, user_agent="a", timeout=1, session=sess, sleep=lambda s: None, max_pages=3)
+    assert sess.calls == 3 and len(out) == 3
+
+
+def test_fetch_pagination_error_after_page1_is_graceful():
+    sess = FakeSession([FakeResponse(200, text=_ka_page([1, 2])), FakeResponse(404)])
+    out = sources.fetch_kleinanzeigen(_URL, user_agent="a", timeout=1, session=sess, sleep=lambda s: None, max_pages=5)
+    assert [l.listing_id for l in out] == ["kleinanzeigen:1", "kleinanzeigen:2"]
+    assert sess.calls == 2
+
+
+def test_fetch_page1_error_propagates():
+    sess = FakeSession([FakeResponse(403)])
+    with pytest.raises(FetchError):
+        sources.fetch_kleinanzeigen(_URL, user_agent="a", timeout=1, session=sess, sleep=lambda s: None, max_pages=5)
+
+
+def test_fetch_pauses_between_pages():
+    sess = FakeSession([
+        FakeResponse(200, text=_ka_page([1])),
+        FakeResponse(200, text=_ka_page([2])),
+        FakeResponse(200, text=_ka_page([])),
+    ])
+    slept = []
+    sources.fetch_kleinanzeigen(
+        _URL, user_agent="a", timeout=1, session=sess, sleep=slept.append,
+        max_pages=5, per_request_delay_s=2.0, request_jitter_s=0.0,
+    )
+    assert slept == [2.0, 2.0]  # one polite pause after each non-final page

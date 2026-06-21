@@ -213,6 +213,7 @@ numeric bound — the filter biases toward false positives over missed flats.
 | `REQUEST_JITTER_S` | `1.5` | Random 0–N seconds added to each delay. |
 | `HTTP_TIMEOUT_S` | `20` | Per-request timeout. |
 | `HTTP_MAX_RETRIES` | `3` | Retries on 5xx/timeout (2s, 4s, 8s backoff); **403 is never retried**. |
+| `KA_MAX_PAGES` | `20` | Walk Kleinanzeigen result pages (`seite:2,3,…`) up to this many, stopping early at the first empty or repeated page. `1` = first page only. |
 | `ENRICH_DETAIL` | `false` | Fetch KA detail pages to fill missing price/rooms/sqm, then re-filter. |
 
 ### Dedup store

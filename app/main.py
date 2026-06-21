@@ -70,15 +70,26 @@ def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, ru
 
     for search in searches:
         polled += 1
-        fetcher = sources.fetch_kleinanzeigen if search.source_type == "kleinanzeigen" else sources.fetch_rss
         try:
-            found = fetcher(
-                search.url,
-                user_agent=cfg.user_agent,
-                timeout=cfg.http_timeout_s,
-                max_retries=cfg.max_retries,
-                session=session,
-            )
+            if search.source_type == "kleinanzeigen":
+                found = sources.fetch_kleinanzeigen(
+                    search.url,
+                    user_agent=cfg.user_agent,
+                    timeout=cfg.http_timeout_s,
+                    max_retries=cfg.max_retries,
+                    session=session,
+                    max_pages=cfg.ka_max_pages,
+                    per_request_delay_s=cfg.per_request_delay_s,
+                    request_jitter_s=cfg.request_jitter_s,
+                )
+            else:
+                found = sources.fetch_rss(
+                    search.url,
+                    user_agent=cfg.user_agent,
+                    timeout=cfg.http_timeout_s,
+                    max_retries=cfg.max_retries,
+                    session=session,
+                )
             pairs.extend((listing, search.criteria) for listing in found)
             run.event("fetch_source", message="ok", source=search.url, count=len(found))
         except sources.FetchError as exc:

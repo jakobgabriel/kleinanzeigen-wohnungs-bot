@@ -25,6 +25,7 @@ def make_config(**overrides) -> Config:
         http_timeout_s=5.0,
         max_retries=3,
         enrich_detail=False,
+        ka_max_pages=1,
         json_store_path="/tmp/flatwatch-test-seen.json",
         nocodb_url=None,
         nocodb_token=None,
