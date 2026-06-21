@@ -113,3 +113,30 @@ def test_recheck_read_failure_is_non_fatal(tmp_path, caplog):
 
     with caplog.at_level("WARNING"):
         assert AvailabilityChecker(_cfg(tmp_path), session=DownSession([], {})).run() == 0
+
+
+def test_recheck_read_404_logs_clear_hint(tmp_path, caplog):
+    """A 404 on the records read is non-fatal and names the likely cause."""
+    class NotFoundSession(FakeSession):
+        def get(self, url, headers=None, params=None, timeout=None):
+            return FakeResp(404, text='{"msg":"Table not found"}')
+
+    with caplog.at_level("WARNING"):
+        assert AvailabilityChecker(_cfg(tmp_path), session=NotFoundSession([], {})).run() == 0
+    assert "HTTP 404" in caplog.text and "NOCODB_LISTINGS_TABLE_ID" in caplog.text
+
+
+def test_recheck_read_sends_no_fields_projection(tmp_path, monkeypatch):
+    """The read must not send a `fields` projection (a column mismatch 404s it)."""
+    monkeypatch.setattr(sources, "polite_pause", lambda *a, **k: None)
+    seen_params = []
+
+    class RecordingSession(FakeSession):
+        def get(self, url, headers=None, params=None, timeout=None):
+            if "/records" in url:
+                seen_params.append(params or {})
+            return super().get(url, headers=headers, params=params, timeout=timeout)
+
+    sess = RecordingSession([_row(1)], {"https://ka/1": "alive"})
+    AvailabilityChecker(_cfg(tmp_path), session=sess).run()
+    assert seen_params and all("fields" not in p for p in seen_params)

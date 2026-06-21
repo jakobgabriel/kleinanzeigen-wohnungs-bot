@@ -63,11 +63,13 @@ class AvailabilityChecker:
         offset = 0
         url = self._records_url()
         while True:
+            # Read full rows (no `fields` projection): a column-name mismatch in a
+            # projection makes NocoDB 404 the whole request, and the other readers
+            # (searches/results) all read full rows too. We only use a few columns.
             resp = self._session.get(
                 url,
                 headers=self._headers(),
-                params={"limit": _NOCODB_PAGE, "offset": offset,
-                        "fields": "Id,listing_id,url,source,available"},
+                params={"limit": _NOCODB_PAGE, "offset": offset},
                 timeout=self.cfg.http_timeout_s,
             )
             resp.raise_for_status()
@@ -115,6 +117,15 @@ class AvailabilityChecker:
             return 0
         try:
             rows = self._fetch_available_rows()
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            body = (getattr(exc.response, "text", "") or "")[:400]
+            log.warning(
+                "Availability recheck: could not read results table (HTTP %s) — %s "
+                "(check NOCODB_LISTINGS_TABLE_ID points at the flatwatch_listings table).",
+                status, body,
+            )
+            return 0
         except (requests.RequestException, ValueError) as exc:
             log.warning("Availability recheck: could not read results table (%s).", exc)
             return 0
