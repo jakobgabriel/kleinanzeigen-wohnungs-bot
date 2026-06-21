@@ -25,6 +25,12 @@ log = logging.getLogger("flatwatch.availability")
 
 _NOCODB_PAGE = 200
 
+# When the recheck finds an ad gone, it advances the lifecycle status to this —
+# but only if the user hasn't engaged with the listing yet (status still "new" or
+# unset), so a hand-set status like "interested"/"accepted" is never overwritten.
+_EXPIRED_STATUS = "expired"
+_UNTOUCHED_STATUSES = (None, "", "new")
+
 # Lower-cased markers Kleinanzeigen shows when an ad is gone.
 _REMOVED_MARKERS = (
     "ist nicht mehr verfügbar",
@@ -142,7 +148,11 @@ class AvailabilityChecker:
             if verdict is None:
                 continue  # unknown — leave as-is
             if verdict:
-                updates.append({"Id": rid, "available": False, "removed_at": now, "last_checked": now})
+                update = {"Id": rid, "available": False, "removed_at": now, "last_checked": now}
+                # Auto-advance the lifecycle to "expired" only if untouched so far.
+                if row.get("status") in _UNTOUCHED_STATUSES:
+                    update["status"] = _EXPIRED_STATUS
+                updates.append(update)
                 removed += 1
             else:
                 updates.append({"Id": rid, "last_checked": now})

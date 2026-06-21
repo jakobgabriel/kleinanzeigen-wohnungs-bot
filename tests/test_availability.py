@@ -58,8 +58,11 @@ def _cfg(tmp_path, **over):
     return make_config(**base)
 
 
-def _row(i, source="kleinanzeigen", available=True):
-    return {"Id": i, "listing_id": f"k:{i}", "url": f"https://ka/{i}", "source": source, "available": available}
+def _row(i, source="kleinanzeigen", available=True, status=None):
+    row = {"Id": i, "listing_id": f"k:{i}", "url": f"https://ka/{i}", "source": source, "available": available}
+    if status is not None:
+        row["status"] = status
+    return row
 
 
 def test_recheck_marks_removed_and_stamps_alive(tmp_path, monkeypatch):
@@ -72,7 +75,22 @@ def test_recheck_marks_removed_and_stamps_alive(tmp_path, monkeypatch):
     by_id = {u["Id"]: u for u in sess.patched}
     assert set(by_id[1]) == {"Id", "last_checked"}        # alive -> only timestamp
     assert by_id[2]["available"] is False and by_id[2]["removed_at"]
+    assert by_id[2]["status"] == "expired"                 # untouched -> auto-expire
     assert by_id[3]["available"] is False                  # 404 -> removed
+
+
+def test_recheck_expires_only_untouched_status(tmp_path, monkeypatch):
+    """A removed ad auto-expires only when status is new/unset; user edits stay."""
+    monkeypatch.setattr(sources, "polite_pause", lambda *a, **k: None)
+    rows = [_row(1, status="new"), _row(2, status="interested"), _row(3)]  # 3 has no status
+    listings = {f"https://ka/{i}": "removed" for i in (1, 2, 3)}
+    sess = FakeSession(rows, listings)
+    AvailabilityChecker(_cfg(tmp_path), session=sess).run()
+    by_id = {u["Id"]: u for u in sess.patched}
+    assert by_id[1]["status"] == "expired"                 # status "new" -> expired
+    assert "status" not in by_id[2]                        # "interested" preserved
+    assert by_id[3]["status"] == "expired"                 # unset -> expired
+    assert all(u["available"] is False for u in sess.patched)
 
 
 def test_recheck_skips_rss_and_already_unavailable(tmp_path, monkeypatch):

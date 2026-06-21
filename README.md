@@ -207,7 +207,7 @@ cycle. Writing is best-effort and never blocks a cycle.
 | `url` | URL / SingleLineText | |
 | `source` | SingleLineText | `kleinanzeigen` / `rss`. |
 | `search_type` | SingleSelect | Copied from the search that found it (`rent-flat`, `buy-house`, …) so you can filter by home type. |
-| `status` | SingleSelect | **Lifecycle you track by hand**: `new`, `reviewing`, `interested`, `contacted`, `viewing-scheduled`, `viewed`, `applied`, `accepted`, `rejected`, `not-considered`, `archived`. flatwatch sets `new` on insert and **never overwrites it** — edit it freely. |
+| `status` | SingleSelect | **Lifecycle you track by hand**: `new`, `reviewing`, `interested`, `contacted`, `viewing-scheduled`, `viewed`, `applied`, `accepted`, `rejected`, `not-considered`, `expired`, `archived`. flatwatch sets `new` on insert. The daily recheck auto-advances a removed ad to `expired` **only when its status is still `new`** — once you move it elsewhere, your value is never overwritten. |
 | `price` | Decimal | Nullable. |
 | `rooms` | Decimal | Nullable. |
 | `sqm` | Decimal | Nullable. |
@@ -232,8 +232,9 @@ The detail columns (`description`, `bedrooms` … `features`) are filled when
 **availability** columns are maintained by a **daily recheck** (`RECHECK_ENABLED`,
 default on): it re-fetches each still-available Kleinanzeigen listing and flags
 removed ones (404 or "nicht mehr verfügbar") as `available=false` + `removed_at`.
-The recheck only touches the availability columns, so your hand-edited `status`
-(and any other notes) are left untouched.
+A removed ad is also advanced to `status=expired`, but **only if you haven't
+touched its status yet** (still `new`); any status you set by hand — and any other
+notes — is left untouched.
 
 Tip: set `ENRICH_DETAIL=true` so listings missing price/rooms/sqm on the search
 card are filled from their detail page before being written.
