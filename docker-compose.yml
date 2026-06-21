@@ -65,6 +65,12 @@ services:
       HEALTH_STALE_AFTER_MIN: ${HEALTH_STALE_AFTER_MIN:-}
       FAILURE_ALERT_THRESHOLD: ${FAILURE_ALERT_THRESHOLD:-}
       ALERT_ON_REPEATED_FAILURES: ${ALERT_ON_REPEATED_FAILURES:-}
+      # --- MCP endpoint (lets Claude trigger a run; off unless MCP_ENABLED=true) ---
+      MCP_ENABLED: ${MCP_ENABLED:-}
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_PORT:-8765}
+      MCP_PATH: ${MCP_PATH:-/mcp}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
       # --- Run-logging ---
       RUN_LOG_ENABLED: ${RUN_LOG_ENABLED:-}
       NOCODB_RUNS_TABLE_ID: ${NOCODB_RUNS_TABLE_ID:-}
@@ -79,6 +85,7 @@ services:
       - flatwatch-data:/data
     ports:
       - "${HEALTHCHECK_PORT:-8080}:8080"
+      - "${MCP_PORT:-8765}:8765"
 
 volumes:
   flatwatch-data:

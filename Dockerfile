@@ -25,8 +25,8 @@ ENV APP_VERSION=${APP_VERSION}
 # Persisted dedup store, heartbeat, and run-log backlog live here.
 VOLUME ["/data"]
 
-# Optional health endpoint (only active if HEALTHCHECK_PORT is set).
-EXPOSE 8080
+# Optional health endpoint (8080) and MCP endpoint (8765, only if MCP_ENABLED=true).
+EXPOSE 8080 8765
 HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
     CMD curl -fsS "http://localhost:${HEALTHCHECK_PORT:-8080}/health" || exit 1
 

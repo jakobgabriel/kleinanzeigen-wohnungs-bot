@@ -13,6 +13,7 @@ import logging
 import random
 import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -21,7 +22,8 @@ import requests
 
 from .config import Config, Criteria, load_config
 from .filters import matches
-from .health import start_health_server, write_health
+from .health import snapshot as health_snapshot, start_health_server, write_health
+from .mcp_server import start_mcp_server
 from .models import Listing
 from .notify import Notifier
 from .results import ResultsSink
@@ -41,6 +43,10 @@ log = logging.getLogger("flatwatch.main")
 
 _STOP = False
 _TRIGGER_NOW = False
+# Set by the poll loop when a manual cycle finishes; lets request_manual_run(wait=True)
+# block until the run it scheduled is done.
+_CYCLE_DONE = threading.Event()
+_TRIGGER_LOCK = threading.Lock()
 
 
 def _handle_signal(signum, _frame):
@@ -54,6 +60,24 @@ def _handle_trigger(signum, _frame):
     global _TRIGGER_NOW
     log.info("Received signal %s — scheduling an on-demand manual cycle.", signum)
     _TRIGGER_NOW = True
+
+
+def request_manual_run(wait: bool = False, timeout: float = 180.0) -> dict:
+    """Schedule an on-demand manual cycle (used by the MCP `trigger_run` tool).
+
+    Async (default): flip the trigger flag and return immediately. The poll loop
+    runs the cycle within ~1s. Sync (``wait``): block until that cycle finishes
+    (or ``timeout``) and return the resulting snapshot.
+    """
+    global _TRIGGER_NOW
+    if not wait:
+        _TRIGGER_NOW = True
+        return {"scheduled": True, "last_cycle": health_snapshot()}
+    with _TRIGGER_LOCK:
+        _CYCLE_DONE.clear()
+        _TRIGGER_NOW = True
+        completed = _CYCLE_DONE.wait(timeout)
+    return {"scheduled": True, "completed": completed, "result": health_snapshot()}
 
 
 def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, run: Run) -> Tuple[List[Pair], int]:
@@ -402,6 +426,15 @@ def main() -> int:
         search_provider.schema_check()
     runlogger.prune()  # E4: prune old run-logs on startup
     start_health_server(cfg.healthcheck_port)
+    start_mcp_server(
+        cfg,
+        request_run=request_manual_run,
+        get_status=health_snapshot,
+        list_searches=lambda: [
+            {"label": s.label, "url": s.url, "source_type": s.source_type, "enabled": s.enabled}
+            for s in search_provider.get_searches()
+        ],
+    )
 
     source = "NocoDB searches table" if cfg.searches_from_nocodb else "env vars"
     log.info(
@@ -420,6 +453,8 @@ def main() -> int:
                       state=state, results=results)
         except Exception:  # ultimate backstop — the loop must never die
             log.exception("Unexpected top-level cycle error; continuing.")
+        if manual:
+            _CYCLE_DONE.set()  # unblock any request_manual_run(wait=True) waiters
         first = False
         manual = False
 

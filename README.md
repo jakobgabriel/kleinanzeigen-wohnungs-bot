@@ -275,6 +275,12 @@ docker kill -s USR1 flatwatch          # or: kill -USR1 <pid>
 
 `SIGTERM`/`SIGINT` still finish the current cycle and exit cleanly.
 
+**From Claude (MCP):** set `MCP_ENABLED=true` and the container serves a FastMCP
+endpoint at `http://<nas-ip>:8765/mcp` with tools `trigger_run`, `get_status`,
+and `list_searches`. Add it as a custom connector in Claude to trigger a search
+run on demand. Open on the LAN by default; set `MCP_AUTH_TOKEN` to require a
+bearer token. See [docs/CONTAINER.md](docs/CONTAINER.md#mcp-endpoint-let-claude-trigger-a-run).
+
 ## Health
 
 After every cycle a heartbeat is written to `HEALTH_PATH` (`/data/health.json`)

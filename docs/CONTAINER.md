@@ -269,6 +269,28 @@ non-fatal.
 | `FAILURE_ALERT_THRESHOLD` | `3` | Consecutive failed cycles before `/health` is 503 and an alert is sent. |
 | `ALERT_ON_REPEATED_FAILURES` | `true` | Send a Telegram/email alert on a sustained outage and on recovery. |
 
+### MCP endpoint (let Claude trigger a run)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MCP_ENABLED` | `false` | Serve a FastMCP endpoint (streamable-HTTP) when true. |
+| `MCP_HOST` | `0.0.0.0` | Bind address. |
+| `MCP_PORT` | `8765` | Port (mapped by compose). |
+| `MCP_PATH` | `/mcp` | URL path of the endpoint. |
+| `MCP_AUTH_TOKEN` | — | If set, require `Authorization: Bearer <token>`; otherwise open. |
+
+When enabled, the container exposes these MCP tools:
+- **`trigger_run(wait=false)`** — schedule a search cycle (returns immediately;
+  set `wait=true` to block until it finishes and return the stats).
+- **`get_status()`** — the latest cycle stats + health.
+- **`list_searches()`** — the active searches.
+
+Add it to Claude as a **custom connector** with the URL
+`http://<nas-ip>:8765/mcp` (plus a bearer token header if you set
+`MCP_AUTH_TOKEN`). The endpoint is **open on the LAN by default** — only expose
+the port to networks you trust, or set a token. It never runs cycles itself; it
+just schedules one in the poll loop, so there's no risk of overlapping runs.
+
 ### Run-logging
 
 | Variable | Default | Notes |

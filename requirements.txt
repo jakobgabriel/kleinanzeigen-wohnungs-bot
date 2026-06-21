@@ -1,3 +1,5 @@
 requests>=2.31,<3
 beautifulsoup4>=4.12,<5
 feedparser>=6.0,<7
+# Optional MCP endpoint (only used when MCP_ENABLED=true); pulls uvicorn/starlette/pydantic.
+fastmcp>=2.3,<3

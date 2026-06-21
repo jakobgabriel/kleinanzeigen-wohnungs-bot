@@ -157,6 +157,13 @@ class Config:
     failure_alert_threshold: int
     alert_on_failures: bool
 
+    # MCP endpoint (FastMCP) — lets Claude trigger a run on demand
+    mcp_enabled: bool
+    mcp_host: str
+    mcp_port: int
+    mcp_path: str
+    mcp_auth_token: Optional[str]
+
     # Run-logging (Epic E)
     run_log_enabled: bool
     nocodb_runs_table_id: Optional[str]
@@ -239,6 +246,11 @@ def load_config() -> Config:
         health_stale_after_min=_env_int("HEALTH_STALE_AFTER_MIN", 0),
         failure_alert_threshold=_env_int("FAILURE_ALERT_THRESHOLD", 3),
         alert_on_failures=_env_bool("ALERT_ON_REPEATED_FAILURES", True),
+        mcp_enabled=_env_bool("MCP_ENABLED", False),
+        mcp_host=_env("MCP_HOST", "0.0.0.0"),
+        mcp_port=_env_int("MCP_PORT", 8765),
+        mcp_path=_env("MCP_PATH", "/mcp"),
+        mcp_auth_token=_env("MCP_AUTH_TOKEN"),
         run_log_enabled=_env_bool("RUN_LOG_ENABLED", True),
         nocodb_runs_table_id=_env("NOCODB_RUNS_TABLE_ID"),
         nocodb_run_events_table_id=_env("NOCODB_RUN_EVENTS_TABLE_ID"),
