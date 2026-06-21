@@ -142,6 +142,40 @@ def test_enabled_defaults_true_when_blank(tmp_path):
     assert len(searches) == 1 and searches[0].enabled is True
 
 
+# ----- Umkreissuche (radius) ----------------------------------------------- #
+def test_radius_km_read_from_row(tmp_path):
+    rows = [{"url": "https://ka/x", "source_type": "kleinanzeigen", "enabled": True, "radius_km": 50}]
+    cfg = _cfg(tmp_path)
+    searches = SearchProvider(cfg, FakeNoco(rows=rows)).get_searches()
+    assert searches[0].radius_km == 50.0
+
+
+def test_blank_radius_inherits_global_default(tmp_path):
+    rows = [{"url": "https://ka/x", "source_type": "kleinanzeigen", "enabled": True}]
+    cfg = _cfg(tmp_path, ka_default_radius_km=30.0)
+    searches = SearchProvider(cfg, FakeNoco(rows=rows)).get_searches()
+    assert searches[0].radius_km == 30.0
+
+
+def test_row_radius_overrides_global_default(tmp_path):
+    rows = [{"url": "https://ka/x", "source_type": "kleinanzeigen", "enabled": True, "radius_km": 100}]
+    cfg = _cfg(tmp_path, ka_default_radius_km=30.0)
+    searches = SearchProvider(cfg, FakeNoco(rows=rows)).get_searches()
+    assert searches[0].radius_km == 100.0
+
+
+def test_env_searches_carry_default_radius(tmp_path):
+    cfg = make_config(
+        ka_urls=["https://ka/berlin"], rss_urls=["https://feed/rss"],
+        json_store_path=str(tmp_path / "seen.json"), ka_default_radius_km=25.0,
+    )
+    searches = SearchProvider(cfg, FakeNoco()).get_searches()
+    ka = next(s for s in searches if s.source_type == "kleinanzeigen")
+    rss = next(s for s in searches if s.source_type == "rss")
+    assert ka.radius_km == 25.0
+    assert rss.radius_km is None  # radius is a Kleinanzeigen-only concept
+
+
 def test_schema_check_ok_and_skipped(tmp_path):
     cfg = _cfg(tmp_path)
     assert SearchProvider(cfg, FakeNoco(rows=[])).schema_check() is True

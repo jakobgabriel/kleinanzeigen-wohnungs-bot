@@ -107,6 +107,7 @@ def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, ru
                     max_pages=cfg.ka_max_pages,
                     per_request_delay_s=cfg.per_request_delay_s,
                     request_jitter_s=cfg.request_jitter_s,
+                    radius_km=search.radius_km,
                 )
             else:
                 found = sources.fetch_rss(
@@ -475,7 +476,8 @@ def main() -> int:
         request_run=request_manual_run,
         get_status=health_snapshot,
         list_searches=lambda: [
-            {"label": s.label, "url": s.url, "source_type": s.source_type, "enabled": s.enabled}
+            {"label": s.label, "url": s.url, "source_type": s.source_type,
+             "enabled": s.enabled, "radius_km": s.radius_km}
             for s in search_provider.get_searches()
         ],
     )

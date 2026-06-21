@@ -203,6 +203,82 @@ def test_ka_page_url_category_only():
     )
 
 
+# --------------------------------------------------------------------------- #
+# Umkreissuche (radius) — r<km> suffix on the category/location code
+# --------------------------------------------------------------------------- #
+def test_ka_radius_url_appends_suffix():
+    assert (
+        sources.ka_radius_url(_URL, 50)
+        == "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/c203l3741r50"
+    )
+
+
+def test_ka_radius_url_none_leaves_url_untouched():
+    assert sources.ka_radius_url(_URL, None) == _URL
+    deep = _URL + "r25"
+    assert sources.ka_radius_url(deep, None) == deep  # respect an in-URL radius
+
+
+def test_ka_radius_url_replaces_existing_radius():
+    deep = "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/c203l3741r25"
+    assert (
+        sources.ka_radius_url(deep, 100)
+        == "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/c203l3741r100"
+    )
+
+
+def test_ka_radius_url_zero_strips_radius():
+    deep = "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/c203l3741r25"
+    assert sources.ka_radius_url(deep, 0) == _URL
+
+
+def test_ka_radius_url_truncates_float_km():
+    assert sources.ka_radius_url(_URL, 50.0).endswith("c203l3741r50")
+
+
+def test_ka_radius_url_no_code_segment_unchanged():
+    # An RSS/other URL with no c<digit> code segment is returned untouched.
+    other = "https://example.com/feed.xml"
+    assert sources.ka_radius_url(other, 50) == other
+
+
+def test_fetch_kleinanzeigen_applies_radius():
+    class RecordingSession:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, headers=None, timeout=None, params=None):
+            self.urls.append(url)
+            return FakeResponse(200, text=_ka_page([1]))
+
+    sess = RecordingSession()
+    sources.fetch_kleinanzeigen(
+        _URL, user_agent="a", timeout=1, session=sess, sleep=lambda s: None,
+        max_pages=1, radius_km=50,
+    )
+    assert sess.urls == ["https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/c203l3741r50"]
+
+
+def test_fetch_kleinanzeigen_radius_survives_pagination():
+    class RecordingSession:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, headers=None, timeout=None, params=None):
+            self.urls.append(url)
+            # page 2 onward is empty so pagination stops after recording the URLs
+            return FakeResponse(200, text=_ka_page([1] if len(self.urls) == 1 else []))
+
+    sess = RecordingSession()
+    sources.fetch_kleinanzeigen(
+        _URL, user_agent="a", timeout=1, session=sess, sleep=lambda s: None,
+        max_pages=3, radius_km=50,
+    )
+    # seite:N is inserted before the radius-bearing code segment on later pages.
+    assert sess.urls[0].endswith("/erfurt/c203l3741r50")
+    assert sess.urls[1] == "https://www.kleinanzeigen.de/s-wohnung-mieten/erfurt/seite:2/c203l3741r50"
+
+
 def test_fetch_paginates_until_empty_page():
     sess = FakeSession([
         FakeResponse(200, text=_ka_page([1, 2])),

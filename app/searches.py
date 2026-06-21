@@ -40,19 +40,25 @@ COL_MIN_SQM = "min_sqm"
 COL_MAX_SQM = "max_sqm"
 COL_REQUIRED_KEYWORDS = "required_keywords"
 COL_EXCLUDED_KEYWORDS = "excluded_keywords"
+COL_RADIUS_KM = "radius_km"
 
 _NOCODB_PAGE = 200
 
 
 @dataclass(frozen=True)
 class Search:
-    """A single search: where to look, and the criteria to apply to it."""
+    """A single search: where to look, and the criteria to apply to it.
+
+    ``radius_km`` is the Umkreissuche radius for Kleinanzeigen searches (include
+    listings within that many km of the town); ``None`` means no radius applied.
+    """
 
     url: str
     source_type: str
     criteria: Criteria
     enabled: bool = True
     label: str = ""
+    radius_km: Optional[float] = None
 
 
 def _to_float(value) -> Optional[float]:
@@ -92,7 +98,8 @@ class SearchProvider:
     def env_searches(self) -> List[Search]:
         """Build searches from the static env vars + global criteria."""
         crit = self.cfg.criteria
-        searches = [Search(u, "kleinanzeigen", crit) for u in self.cfg.ka_urls]
+        radius = self.cfg.ka_default_radius_km
+        searches = [Search(u, "kleinanzeigen", crit, radius_km=radius) for u in self.cfg.ka_urls]
         searches += [Search(u, "rss", crit) for u in self.cfg.rss_urls]
         return searches
 
@@ -151,12 +158,15 @@ class SearchProvider:
         if source_type not in VALID_SOURCE_TYPES:
             # Infer from the URL when the column is blank/unknown.
             source_type = "kleinanzeigen" if "kleinanzeigen" in url.lower() else "rss"
+        radius = _to_float(row.get(COL_RADIUS_KM))
         return Search(
             url=url,
             source_type=source_type,
             criteria=self._merged_criteria(row),
             enabled=_to_bool(row.get(COL_ENABLED)),
             label=(row.get(COL_LABEL) or "").strip(),
+            # Blank radius cell inherits the global KA_DEFAULT_RADIUS_KM default.
+            radius_km=radius if radius is not None else self.cfg.ka_default_radius_km,
         )
 
     # ----- public ----------------------------------------------------------- #

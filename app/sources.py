@@ -194,6 +194,43 @@ def _extract_tags(card) -> Tuple[Optional[float], Optional[float]]:
 # before the category code (e.g. .../erfurt/seite:3/c203l3741). Page 1 has none.
 _SEITE_RE = re.compile(r"^seite:\d+$")
 
+# The category/location code segment is the one containing "c<digit>"
+# (e.g. c203l3741 = Mietwohnungen in location 3741).
+_KA_CODE_RE = re.compile(r"c\d")
+# A radius (Umkreissuche) is an "r<km>" suffix on that segment (c203l3741r50).
+_KA_RADIUS_SUFFIX_RE = re.compile(r"r\d+$")
+
+
+def ka_radius_url(url: str, radius_km: Optional[float]) -> str:
+    """Return the KA search URL with an Umkreissuche (radius) of ``radius_km`` km.
+
+    Kleinanzeigen encodes a search radius as an ``r<km>`` suffix on the
+    category/location code segment, so a search around a town also surfaces
+    listings in the surrounding area::
+
+        .../s-wohnung-mieten/erfurt/c203l3741   →   .../erfurt/c203l3741r50
+
+    Semantics:
+    - ``None``  → return the URL unchanged (respect whatever the URL already has).
+    - ``> 0``   → set/replace the radius (a deep-linked ``r<km>`` is normalised).
+    - ``<= 0``  → strip any existing radius (an explicit "no radius" search).
+
+    Returns the URL untouched if no category code segment is found (e.g. an RSS
+    or otherwise unrecognised URL).
+    """
+    if radius_km is None:
+        return url
+    km = int(radius_km)
+    parsed = urlparse(url)
+    segs = parsed.path.split("/")
+    for i, seg in enumerate(segs):
+        if seg and _KA_CODE_RE.search(seg):
+            base = _KA_RADIUS_SUFFIX_RE.sub("", seg)
+            segs[i] = f"{base}r{km}" if km > 0 else base
+            break
+    new_path = "/".join(segs)
+    return urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, parsed.query, parsed.fragment))
+
 
 def ka_page_url(url: str, page: int) -> str:
     """Return the KA search URL for a given 1-based page.
@@ -224,8 +261,12 @@ def fetch_kleinanzeigen(
     max_pages: int = 1,
     per_request_delay_s: float = 0.0,
     request_jitter_s: float = 0.0,
+    radius_km: Optional[float] = None,
 ) -> List[Listing]:
     """Fetch and parse a Kleinanzeigen search, walking pages until they run out.
+
+    When ``radius_km`` is set, an Umkreissuche (radius) suffix is applied to the
+    search URL first, so listings within that many km of the town are included.
 
     Pagination has a *flexible end* (the page count is unknown): it stops at the
     first page that yields no cards, or yields only listings already seen on an
@@ -234,6 +275,7 @@ def fetch_kleinanzeigen(
     delay. A failure on page > 1 ends pagination gracefully with what we have; a
     failure on page 1 propagates so the source is marked failed.
     """
+    url = ka_radius_url(url, radius_km)
     base = _origin(url)
     listings: List[Listing] = []
     seen_ids: set = set()

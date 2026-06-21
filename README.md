@@ -172,6 +172,15 @@ remain the fallback).
 | `min_sqm` / `max_sqm` | Number | Blank → inherit global. |
 | `required_keywords` | SingleLineText | Comma-separated; blank → inherit global. |
 | `excluded_keywords` | SingleLineText | Comma-separated; blank → inherit global. |
+| `radius_km` | Number | **Umkreissuche**: search radius in km around the town (Kleinanzeigen only); blank → inherit global `KA_DEFAULT_RADIUS_KM`. |
+
+**Umkreissuche (radius search):** for a Kleinanzeigen search, set `radius_km` to
+also surface flats in the surrounding area, not just the exact town. flatwatch
+appends Kleinanzeigen's `r<km>` suffix to the location code (e.g.
+`…/erfurt/c203l3741` → `…/erfurt/c203l3741r50` for 50 km). Set it per-row in the
+searches table, or globally for all KA searches via `KA_DEFAULT_RADIUS_KM`; a row
+value overrides the global default, `0` forces "no radius", and any radius already
+encoded in the URL is normalised to the requested value.
 
 **Resilience:** if the table is unreachable, flatwatch reuses the last-known-good
 list it read; if there is none (or the table is empty / all-disabled) it falls

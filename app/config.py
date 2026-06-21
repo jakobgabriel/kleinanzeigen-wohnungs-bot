@@ -125,6 +125,9 @@ class Config:
     ka_max_pages: int
     persist_batch_size: int   # store the prime backlog incrementally in batches
 
+    # Umkreissuche: default KA search radius in km (per-search rows can override)
+    ka_default_radius_km: Optional[float]
+
     # Daily availability recheck (tags removed listings in the results table)
     recheck_enabled: bool
     recheck_interval_days: int
@@ -229,6 +232,7 @@ def load_config() -> Config:
         enrich_detail=_env_bool("ENRICH_DETAIL", False),
         ka_max_pages=max(1, _env_int("KA_MAX_PAGES", 20)),
         persist_batch_size=max(1, _env_int("PERSIST_BATCH_SIZE", 25)),
+        ka_default_radius_km=_env_float("KA_DEFAULT_RADIUS_KM"),
         recheck_enabled=_env_bool("RECHECK_ENABLED", True),
         recheck_interval_days=max(1, _env_int("RECHECK_INTERVAL_DAYS", 1)),
         json_store_path=_env("JSON_STORE_PATH", "/data/seen.json"),
