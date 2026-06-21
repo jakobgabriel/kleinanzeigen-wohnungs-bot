@@ -177,6 +177,20 @@ def test_mark_seen_many_batches_writes(tmp_path):
     assert all(store.is_new(f"k:{i}") is False for i in range(15))
 
 
+def test_signature_row_coexists_with_ids(tmp_path):
+    """A content signature is stored as an ordinary seen-id row (no schema change)."""
+    cfg = _nocodb_config(tmp_path)
+    sess = FakeNocoSession()
+    store = SeenStore(cfg, session=sess)
+    store.mark_seen_many([("kleinanzeigen:1", {"title": "t", "url": "u", "source": "kleinanzeigen"}),
+                          ("sig:abc123", None)])
+    assert store.is_new("sig:abc123") is False     # signature recognized as seen
+    assert store.is_new("kleinanzeigen:1") is False
+    assert store.is_new("kleinanzeigen:2") is True  # unrelated id unaffected
+    posted_ids = {r.get("listing_id") for r in sess.rows}
+    assert {"kleinanzeigen:1", "sig:abc123"} <= posted_ids  # both rows hit NocoDB
+
+
 def test_nocodb_down_degrades_to_json(tmp_path, caplog):
     cfg = _nocodb_config(tmp_path)
     sess = FakeNocoSession(down=True)

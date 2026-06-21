@@ -29,6 +29,7 @@ def make_config(**overrides) -> Config:
         persist_batch_size=25,
         enrich_concurrency=1,
         enrich_delay_s=0.5,
+        content_dedup_enabled=True,
         recheck_enabled=True,
         recheck_interval_days=1,
         json_store_path="/tmp/flatwatch-test-seen.json",

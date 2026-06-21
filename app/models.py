@@ -63,6 +63,50 @@ def stable_id(source: str, native_id: Optional[str], url: str) -> str:
     return f"{source}:{digest}"
 
 
+def _normalize_location(location: Optional[str]) -> str:
+    """Collapse a location string to a stable comparison key.
+
+    Lower-cases, drops a German postal code (5 digits — KA cards render
+    "12345 Berlin - Mitte" inconsistently), and squeezes separators/whitespace.
+    Returns ``""`` when the location is missing.
+    """
+    if not location:
+        return ""
+    low = location.strip().lower()
+    low = re.sub(r"\b\d{5}\b", " ", low)          # drop postal codes
+    low = re.sub(r"[\s\-,]+", " ", low).strip()   # normalize separators
+    return low
+
+
+def content_signature(listing: "Listing") -> Optional[str]:
+    """Derive a content-based dedup key, or ``None`` when the listing is ineligible.
+
+    Catches the *same flat reposted under a different ad-id* (different
+    ``listing_id``) that id-based dedup misses. Eligible **only when price AND
+    sqm are both known** — otherwise ``None`` is returned and the listing is
+    deduped by ``listing_id`` alone, so a missing attribute never collapses two
+    genuinely different flats. The key is the rounded price, rounded sqm, rounded
+    rooms (``"?"`` when absent) and the normalized location, hashed to a short
+    stable string prefixed ``sig:`` so it can never collide with a real
+    ``stable_id`` (always ``"<source>:<id>"``) and can coexist in the seen store.
+
+    ``source`` is intentionally excluded so a flat cross-posted on another source
+    also collapses; if that ever over-merges (e.g. rough RSS parsing), prepend
+    ``listing.source`` to ``key``.
+    """
+    if listing.price is None or listing.sqm is None:
+        return None
+    rooms = round(listing.rooms) if listing.rooms is not None else "?"
+    key = "|".join((
+        str(int(round(listing.price))),
+        str(int(round(listing.sqm))),
+        str(rooms),
+        _normalize_location(listing.location),
+    ))
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+    return f"sig:{digest}"
+
+
 @dataclass
 class Listing:
     """A normalized rental listing.

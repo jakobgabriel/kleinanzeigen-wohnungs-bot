@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.models import Listing, parse_number, stable_id
+from app.models import Listing, content_signature, parse_number, stable_id
 
 
 @pytest.mark.parametrize(
@@ -45,6 +45,55 @@ def test_stable_id_differs_by_url():
     a = stable_id("rss", None, "https://example.com/a")
     b = stable_id("rss", None, "https://example.com/b")
     assert a != b
+
+
+# --------------------------------------------------------------------------- #
+# content_signature — catch the same flat reposted under a different ad-id
+# --------------------------------------------------------------------------- #
+def _sig_listing(**kw):
+    base = dict(source="kleinanzeigen", title="Wohnung", url="https://x/1", native_id="1",
+                price=900.0, sqm=65.0, rooms=2.0, location="10115 Berlin")
+    base.update(kw)
+    return Listing.create(**base)
+
+
+def test_content_signature_eligible_when_price_and_sqm():
+    sig = content_signature(_sig_listing())
+    assert sig.startswith("sig:")
+    assert len(sig.split(":", 1)[1]) == 16
+
+
+def test_content_signature_none_when_price_missing():
+    assert content_signature(_sig_listing(price=None)) is None
+
+
+def test_content_signature_none_when_sqm_missing():
+    assert content_signature(_sig_listing(sqm=None)) is None
+
+
+def test_content_signature_is_deterministic():
+    assert content_signature(_sig_listing(native_id="1")) == content_signature(_sig_listing(native_id="2"))
+
+
+def test_content_signature_rounds_price_and_sqm():
+    # A repost rendering 64,9 m² / 900,40 € collapses to the same flat.
+    assert content_signature(_sig_listing(sqm=64.9, price=900.4)) == content_signature(_sig_listing())
+
+
+def test_content_signature_differs_by_location():
+    assert content_signature(_sig_listing(location="Hamburg")) != content_signature(_sig_listing())
+
+
+def test_content_signature_normalizes_postal_code():
+    assert content_signature(_sig_listing(location="10115 Berlin")) == \
+        content_signature(_sig_listing(location="Berlin"))
+
+
+def test_content_signature_ignores_source():
+    # The same eligible flat on a different source shares a signature (cross-source).
+    ka = _sig_listing(source="kleinanzeigen", url="https://ka/1")
+    rss = _sig_listing(source="rss", url="https://feed/1")
+    assert content_signature(ka) == content_signature(rss)
 
 
 def test_listing_create_sets_id_and_haystack():

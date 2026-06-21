@@ -126,6 +126,7 @@ class Config:
     persist_batch_size: int   # store the prime backlog incrementally in batches
     enrich_concurrency: int   # parallel detail-page fetches (1 = sequential)
     enrich_delay_s: float     # per-worker pause during enrichment (shorter than the search delay)
+    content_dedup_enabled: bool  # collapse the same flat reposted under different ad-ids
 
     # Daily availability recheck (tags removed listings in the results table)
     recheck_enabled: bool
@@ -233,6 +234,7 @@ def load_config() -> Config:
         persist_batch_size=max(1, _env_int("PERSIST_BATCH_SIZE", 25)),
         enrich_concurrency=max(1, _env_int("ENRICH_CONCURRENCY", 4)),
         enrich_delay_s=_env_float("ENRICH_DELAY_S") or 0.5,
+        content_dedup_enabled=_env_bool("CONTENT_DEDUP_ENABLED", True),
         recheck_enabled=_env_bool("RECHECK_ENABLED", True),
         recheck_interval_days=max(1, _env_int("RECHECK_INTERVAL_DAYS", 1)),
         json_store_path=_env("JSON_STORE_PATH", "/data/seen.json"),

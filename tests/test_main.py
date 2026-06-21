@@ -540,3 +540,103 @@ def test_enrich_skips_non_kleinanzeigen(monkeypatch):
     out = main_mod._enrich_new(cfg, DummySession(), _StubRun(), pairs)
     assert len(out) == 3
     assert "https://feed/1" not in calls  # RSS listing never fetched for detail
+
+
+# --------------------------------------------------------------------------- #
+# Content-based de-duplication (same flat reposted under a different ad-id)
+# --------------------------------------------------------------------------- #
+def _flat(i, **kw):
+    base = dict(price=900, sqm=65, location="10115 Berlin")
+    base.update(kw)
+    return _listing(i, **base)
+
+
+def test_content_dedup_drops_repost_within_cycle(tmp_path, monkeypatch):
+    main_mod._NOTIFY_ATTEMPTS.clear()
+    a, b = _flat(1), _flat(2)  # different ad-ids, same flat
+    _patch_fetch(monkeypatch, [a, b])
+    cfg, store, notifier, runlogger = _make(tmp_path, [])
+    res = StubResults()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert sum(len(w) for w in res.written) == 1            # only one row stored
+    assert store.is_new("kleinanzeigen:1") is False
+    assert store.is_new("kleinanzeigen:2") is False         # repost id also marked seen
+
+
+def test_content_dedup_keeps_distinct_flats(tmp_path, monkeypatch):
+    a, b = _flat(1), _flat(2, sqm=80, price=1100)  # genuinely different flats
+    _patch_fetch(monkeypatch, [a, b])
+    cfg, store, notifier, runlogger = _make(tmp_path, [])
+    res = StubResults()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert sum(len(w) for w in res.written) == 2
+
+
+def test_content_dedup_disabled_keeps_both(tmp_path, monkeypatch):
+    a, b = _flat(1), _flat(2)
+    _patch_fetch(monkeypatch, [a, b])
+    cfg, store, notifier, runlogger = _make(tmp_path, [], content_dedup_enabled=False)
+    res = StubResults()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert sum(len(w) for w in res.written) == 2            # escape hatch works
+
+
+def test_content_dedup_ineligible_listings_kept(tmp_path, monkeypatch):
+    a, b = _listing(1), _listing(2)  # no price/sqm -> ineligible -> id-only dedup
+    _patch_fetch(monkeypatch, [a, b])
+    cfg, store, notifier, runlogger = _make(tmp_path, [])
+    res = StubResults()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert sum(len(w) for w in res.written) == 2
+
+
+def test_content_dedup_across_cycles(tmp_path, monkeypatch):
+    feed = [[_flat(1)], [_flat(2)]]  # cycle 1: ad :1, cycle 2: same flat reposted as :2
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", lambda u, **k: feed.pop(0))
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+    cfg, store, notifier, runlogger = _make(tmp_path, [])
+    res = StubResults()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    res.written.clear()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert res.written == []                                # cycle-2 repost collapses
+    assert store.is_new("kleinanzeigen:2") is False
+
+
+def test_content_dedup_drops_before_notify(tmp_path, monkeypatch):
+    main_mod._NOTIFY_ATTEMPTS.clear()
+    a, b = _flat(1), _flat(2)
+    _patch_fetch(monkeypatch, [a, b])
+    cfg, store, notifier, runlogger = _make(tmp_path, [], telegram_token="t", telegram_chat_id="c")
+    notified = []
+    monkeypatch.setattr(notifier, "notify", lambda l: notified.append(l) or _Result2())
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False)
+    assert [l.listing_id for l in notified] == ["kleinanzeigen:1"]  # repost never notified
+    main_mod._NOTIFY_ATTEMPTS.clear()
+
+
+def test_prime_incremental_content_dedup_across_batches(tmp_path, monkeypatch):
+    """Reposts that land in different prime batches collapse to one row (cross-batch)."""
+    from app.config import Criteria
+    from app.searches import Search, SearchProvider
+
+    # 4 ads, all the same flat after enrichment -> distinct ids, one signature.
+    listings = [_listing(i) for i in range(4)]
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen", lambda u, **k: listings)
+    monkeypatch.setattr(main_mod.sources, "polite_pause", lambda *a, **k: None)
+    monkeypatch.setattr(main_mod.sources, "fetch_kleinanzeigen_detail",
+                        lambda u, **k: {"price": 900.0, "sqm": 65.0, "location": "Berlin"})
+
+    cfg, store, notifier, runlogger = _make(
+        tmp_path, [], ka_urls=[], rss_urls=[], enrich_detail=True, persist_batch_size=2,
+    )
+    res = StubResults()
+
+    class Prov(SearchProvider):
+        def get_searches(self):
+            return [Search("https://ka/s", "kleinanzeigen", Criteria())]
+
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(),
+                       prime=True, search_provider=Prov(cfg, DummySession()), results=res)
+    assert sum(len(w) for w in res.written) == 1            # one distinct flat across batches
+    assert all(store.is_new(f"kleinanzeigen:{i}") is False for i in range(4))

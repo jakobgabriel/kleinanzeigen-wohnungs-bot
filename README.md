@@ -188,6 +188,16 @@ appends Kleinanzeigen's `r<km>` suffix to the location code (e.g.
 **per-search in this table only** (there is no env var); `0` forces "no radius",
 and any radius already encoded in the URL is normalised to the cell's value.
 
+**Duplicate flats across overlapping radii.** Two overlapping radius searches that
+catch the *same ad* are already deduped by ad-id. When the *same flat* is reposted
+under **different ad-ids** (reposts / agent cross-posts), flatwatch additionally
+collapses them by a **content signature** — rounded price + m² + rooms + location —
+so only the first is stored/notified and the repost's id is remembered (it isn't
+re-fetched). The signature is computed only when price **and** m² are known (so a
+missing value never merges two different flats) and is stored in `flatwatch_seen`
+alongside the ad-ids (no schema change). Toggle with `CONTENT_DEDUP_ENABLED`
+(default on).
+
 **Resilience:** if the table is unreachable, flatwatch reuses the last-known-good
 list it read; if there is none (or the table is empty / all-disabled) it falls
 back to the env-var searches. Reading searches never blocks a cycle.

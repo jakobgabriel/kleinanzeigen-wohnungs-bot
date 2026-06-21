@@ -27,7 +27,7 @@ from .config import Config, Criteria, load_config
 from .filters import matches
 from .health import snapshot as health_snapshot, start_health_server, write_health
 from .mcp_server import start_mcp_server
-from .models import Listing
+from .models import Listing, content_signature
 from .notify import Notifier
 from .results import ResultsSink
 from .runlog import Run, RunLogger
@@ -312,6 +312,14 @@ def run_cycle(
                 log.info("pipeline[4/5] enrich: skipped (ENRICH_DETAIL=%s, %d new).",
                          cfg.enrich_detail, len(new_pairs))
             new_listings = [l for (l, _c) in new_pairs]
+            # Content dedup: collapse the same flat reposted under a different
+            # ad-id (overlapping radius searches). Runs after enrichment so price/
+            # sqm are populated, and before notify/persist so dups never notify.
+            new_listings, dropped = _dedup_content(cfg, store, new_listings, set())
+            if dropped:
+                _mark_dropped_seen(store, dropped)
+                run.event("dedup", message=f"content dedup dropped {len(dropped)}", count=len(new_listings))
+                log.info("pipeline[4.5/5] content-dedup: dropped %d repost(s) of the same flat.", len(dropped))
             new_count = len(new_listings)
             if prime:
                 log.info("pipeline[5/5] persist (silent prime): storing %d new listing(s).", new_count)
@@ -461,12 +469,55 @@ def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, results: Resu
 
 
 def _persist(store: SeenStore, results: ResultsSink, listings: List[Listing]) -> None:
-    """Mark listings seen (one batch) and write their full rows to the results table."""
+    """Mark listings seen (ids + content signatures) and write their full rows.
+
+    Each kept listing's content signature (when eligible) is recorded in the seen
+    store alongside its id, so a future repost of the same flat under a different
+    ad-id collapses (see ``_dedup_content``).
+    """
     if not listings:
         return
-    store.mark_seen_many([(l.listing_id, _seen_extra(l)) for l in listings])
+    items = [(l.listing_id, _seen_extra(l)) for l in listings]
+    for l in listings:
+        sig = content_signature(l)
+        if sig is not None:
+            items.append((sig, None))
+    store.mark_seen_many(items)
     log.info("persist: marked %d listing(s) as seen.", len(listings))
     results.write(listings)
+
+
+def _dedup_content(cfg: Config, store: SeenStore, listings: List[Listing],
+                   local_seen: set) -> Tuple[List[Listing], List[Listing]]:
+    """Split listings into (kept, dropped) by content signature (#dup).
+
+    Catches the same flat reposted under a different ad-id that survived id-dedup.
+    A listing is a content-dup when its signature is already in the seen store (a
+    prior cycle / prior prime batch) or already seen earlier in this run
+    (``local_seen``). Ineligible listings (signature ``None``) are always kept.
+    """
+    if not cfg.content_dedup_enabled:
+        return listings, []
+    kept: List[Listing] = []
+    dropped: List[Listing] = []
+    for listing in listings:
+        sig = content_signature(listing)
+        if sig is None:
+            kept.append(listing)
+            continue
+        if sig in local_seen or not store.is_new(sig):
+            dropped.append(listing)
+            continue
+        local_seen.add(sig)
+        kept.append(listing)
+    return kept, dropped
+
+
+def _mark_dropped_seen(store: SeenStore, dropped: List[Listing]) -> None:
+    """Mark content-duplicate ids seen (so they aren't re-enriched next cycle),
+    without writing a results row or a second signature."""
+    if dropped:
+        store.mark_seen_many([(l.listing_id, None) for l in dropped])
 
 
 def _prime_incremental(cfg: Config, session: requests.Session, store: SeenStore,
@@ -477,10 +528,15 @@ def _prime_incremental(cfg: Config, session: requests.Session, store: SeenStore,
     total = len(new_pairs)
     bs = cfg.persist_batch_size
     stored = 0
+    local_seen: set = set()  # collapse same-/earlier-batch reposts across the run
     log.info("pipeline[4-5/5] prime: enriching + storing %d new listing(s) in batches of %d…", total, bs)
     for i in range(0, total, bs):
         chunk = _enrich_new(cfg, session, run, new_pairs[i:i + bs], progress_total=total, progress_offset=i)
         listings = [l for (l, _c) in chunk]
+        listings, dropped = _dedup_content(cfg, store, listings, local_seen)
+        if dropped:
+            _mark_dropped_seen(store, dropped)
+            log.info("prime content-dedup: dropped %d repost(s).", len(dropped))
         _persist(store, results, listings)
         stored += len(listings)
         log.info("prime progress: processed %d/%d, stored %d so far.", min(i + bs, total), total, stored)
