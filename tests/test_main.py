@@ -385,6 +385,56 @@ def test_health_stats_include_failure_fields(tmp_path, monkeypatch):
     assert stats["fail_threshold"] == cfg.failure_alert_threshold
 
 
+class StubResults:
+    def __init__(self):
+        self.written = []
+
+    @property
+    def enabled(self):
+        return True
+
+    def write(self, listings):
+        self.written.append(sorted(l.listing_id for l in listings))
+
+
+def test_results_written_for_new_matches_then_deduped(tmp_path, monkeypatch):
+    main_mod._NOTIFY_ATTEMPTS.clear()
+    listings = [_listing(1), _listing(2)]
+    _patch_fetch(monkeypatch, listings)
+    cfg, store, notifier, runlogger = _make(tmp_path, [])  # notifications off
+    res = StubResults()
+
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert res.written == [["kleinanzeigen:1", "kleinanzeigen:2"]]
+
+    # Second cycle: all already seen -> nothing new -> no further results writes.
+    res.written.clear()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert res.written == []
+
+
+def test_results_written_on_prime_backlog(tmp_path, monkeypatch):
+    listings = [_listing(1), _listing(2)]
+    _patch_fetch(monkeypatch, listings)
+    cfg, store, notifier, runlogger = _make(tmp_path, [])
+    res = StubResults()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=True, results=res)
+    assert res.written == [["kleinanzeigen:1", "kleinanzeigen:2"]]
+    assert store.is_new("kleinanzeigen:1") is False
+
+
+def test_results_not_written_for_undelivered(tmp_path, monkeypatch):
+    main_mod._NOTIFY_ATTEMPTS.clear()
+    _patch_fetch(monkeypatch, [_listing(1)])
+    cfg, store, notifier, runlogger = _make(tmp_path, [], telegram_token="t", telegram_chat_id="c")
+    monkeypatch.setattr(notifier, "notify", lambda l: _FailResult())
+    res = StubResults()
+    main_mod.run_cycle(cfg, store, notifier, runlogger, DummySession(), prime=False, results=res)
+    assert res.written == []                       # undelivered -> not persisted -> not written
+    assert store.is_new("kleinanzeigen:1") is True
+    main_mod._NOTIFY_ATTEMPTS.clear()
+
+
 def test_sigusr1_sets_manual_trigger_and_sleep_wakes(monkeypatch):
     # Handler flips the flag; _sleep_interval returns promptly while it's set.
     monkeypatch.setattr(main_mod, "_TRIGGER_NOW", False)

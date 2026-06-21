@@ -24,6 +24,7 @@ from .filters import matches
 from .health import start_health_server, write_health
 from .models import Listing
 from .notify import Notifier
+from .results import ResultsSink
 from .runlog import Run, RunLogger
 from .searches import Search, SearchProvider
 from . import sources
@@ -156,6 +157,7 @@ def run_cycle(
     trigger: Optional[str] = None,
     search_provider: Optional[SearchProvider] = None,
     state: Optional["CycleState"] = None,
+    results: Optional[ResultsSink] = None,
 ) -> dict:
     """Execute one poll cycle. Returns the heartbeat stats dict.
 
@@ -165,6 +167,7 @@ def run_cycle(
     ``state`` carries cross-cycle health info (consecutive failures, last success).
     """
     state = state if state is not None else CycleState()
+    results = results if results is not None else ResultsSink(cfg, session)
     run = runlogger.start(trigger=trigger or ("startup_prime" if prime else "scheduled"))
     provider = search_provider or SearchProvider(cfg, session)
     notified = 0
@@ -199,11 +202,11 @@ def run_cycle(
         new_count = len(new_listings)
 
         if prime:
-            # Silent prime: mark everything seen, notify nothing.
-            store.prime([l.listing_id for l in new_listings])
+            # Silent prime: record everything (incl. full results) but notify nothing.
+            _persist(store, results, new_listings)
             run.event("persist", message="silent prime", count=new_count)
         else:
-            notified = _notify_new(cfg, store, notifier, run, new_listings)
+            notified = _notify_new(cfg, store, notifier, results, run, new_listings)
 
     except Exception as exc:  # catch-log-continue; record + classify as failed
         log.exception("Cycle failed")
@@ -307,7 +310,7 @@ def _settle(listing: Listing, delivered: bool, run: Run, persist: List[Listing],
     return False
 
 
-def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new_listings: List[Listing]) -> int:
+def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, results: ResultsSink, run: Run, new_listings: List[Listing]) -> int:
     """Notify new listings with a batching guard (C2). Returns count notified."""
     if not new_listings:
         run.event("notify_start", count=0)
@@ -335,13 +338,21 @@ def _notify_new(cfg: Config, store: SeenStore, notifier: Notifier, run: Run, new
         for listing in overflow:
             _settle(listing, delivered, run, persist, note=f"summary({len(overflow)})")
 
-    # #4/#5: one JSON write + one bulk NocoDB insert for the whole batch.
+    # Persist exactly the listings we're committing this cycle (one batch).
     if persist:
-        store.mark_seen_many([(l.listing_id, _seen_extra(l)) for l in persist])
+        _persist(store, results, persist)
         run.event("persist", message="marked seen", count=len(persist))
 
     run.event("notify_done", count=notified)
     return notified
+
+
+def _persist(store: SeenStore, results: ResultsSink, listings: List[Listing]) -> None:
+    """Mark listings seen (one batch) and write their full rows to the results table."""
+    if not listings:
+        return
+    store.mark_seen_many([(l.listing_id, _seen_extra(l)) for l in listings])
+    results.write(listings)
 
 
 def _dedup_pairs(pairs: List[Pair]) -> List[Pair]:
@@ -373,6 +384,7 @@ def main() -> int:
     notifier = Notifier(cfg, session=session)
     runlogger = RunLogger(cfg, session=session)
     search_provider = SearchProvider(cfg, session=session)
+    results = ResultsSink(cfg, session=session)
 
     store.schema_check()
     if cfg.searches_from_nocodb:
@@ -393,7 +405,8 @@ def main() -> int:
         try:
             trigger = "manual" if manual else None
             run_cycle(cfg, store, notifier, runlogger, session,
-                      prime=first, trigger=trigger, search_provider=search_provider, state=state)
+                      prime=first, trigger=trigger, search_provider=search_provider,
+                      state=state, results=results)
         except Exception:  # ultimate backstop — the loop must never die
             log.exception("Unexpected top-level cycle error; continuing.")
         first = False

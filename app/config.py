@@ -133,6 +133,9 @@ class Config:
     # Dynamic searches table (env URLs/criteria are the fallback)
     nocodb_searches_table_id: Optional[str]
 
+    # Results sink: full listing rows written to a dedicated NocoDB table
+    nocodb_listings_table_id: Optional[str]
+
     # Notifications
     telegram_token: Optional[str]
     telegram_chat_id: Optional[str]
@@ -184,6 +187,11 @@ class Config:
         """True when searches should be read live from the NocoDB searches table."""
         return bool(self.nocodb_url and self.nocodb_token and self.nocodb_searches_table_id)
 
+    @property
+    def results_enabled(self) -> bool:
+        """True when full listing rows should be written to the results table."""
+        return bool(self.nocodb_url and self.nocodb_token and self.nocodb_listings_table_id)
+
 
 def load_config() -> Config:
     """Read, validate, and return the runtime configuration.
@@ -212,6 +220,7 @@ def load_config() -> Config:
         nocodb_table_id=_env("NOCODB_TABLE_ID"),
         nocodb_id_field=_env("NOCODB_ID_FIELD", "listing_id"),
         nocodb_searches_table_id=_env("NOCODB_SEARCHES_TABLE_ID"),
+        nocodb_listings_table_id=_env("NOCODB_LISTINGS_TABLE_ID"),
         telegram_token=_env("TELEGRAM_TOKEN"),
         telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
         smtp_host=_env("SMTP_HOST"),

@@ -1,0 +1,85 @@
+"""Tests for the NocoDB results sink (flatwatch_listings)."""
+
+import json
+
+import requests
+
+from app.models import Listing
+from app.results import ResultsSink
+from tests.conftest import make_config
+
+
+class FakeResp:
+    def __init__(self, status=200):
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+
+class FakeSession:
+    def __init__(self, down=False):
+        self.down = down
+        self.posts = []
+
+    def post(self, url, headers=None, data=None, timeout=None):
+        if self.down:
+            raise requests.ConnectionError("down")
+        self.posts.append({"url": url, "rows": json.loads(data)})
+        return FakeResp(200)
+
+
+def _cfg(tmp_path, **over):
+    base = dict(
+        json_store_path=str(tmp_path / "seen.json"),
+        nocodb_url="https://noco.example", nocodb_token="tok",
+        nocodb_listings_table_id="listings",
+    )
+    base.update(over)
+    return make_config(**base)
+
+
+def _listing(i, **kw):
+    base = dict(source="kleinanzeigen", title=f"Wohnung {i}", url=f"https://ka/{i}", native_id=str(i),
+                price=900 + i, rooms=2, sqm=60, location="Berlin", description="schön")
+    base.update(kw)
+    return Listing.create(**base)
+
+
+def test_write_bulk_payload_with_full_fields(tmp_path):
+    sess = FakeSession()
+    ResultsSink(_cfg(tmp_path), session=sess).write([_listing(1), _listing(2)])
+    assert len(sess.posts) == 1                 # single bulk POST
+    rows = sess.posts[0]["rows"]
+    assert len(rows) == 2
+    row = rows[0]
+    assert set(row) >= {
+        "listing_id", "title", "url", "source", "price", "rooms", "sqm",
+        "location", "description", "first_seen",
+    }
+    assert row["listing_id"] == "kleinanzeigen:1"
+    assert row["price"] == 901 and row["sqm"] == 60
+    assert row["first_seen"]
+
+
+def test_noop_when_table_id_unset(tmp_path):
+    cfg = make_config(json_store_path=str(tmp_path / "seen.json"))  # no listings table id
+    sess = FakeSession()
+    sink = ResultsSink(cfg, session=sess)
+    assert sink.enabled is False
+    sink.write([_listing(1)])
+    assert sess.posts == []
+
+
+def test_write_never_raises_on_failure(tmp_path, caplog):
+    sess = FakeSession(down=True)
+    with caplog.at_level("WARNING"):
+        ResultsSink(_cfg(tmp_path), session=sess).write([_listing(1)])  # must not raise
+    assert any("Could not write results" in r.message for r in caplog.records)
+
+
+def test_write_empty_is_noop(tmp_path):
+    sess = FakeSession()
+    ResultsSink(_cfg(tmp_path), session=sess).write([])
+    assert sess.posts == []

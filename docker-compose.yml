@@ -1,30 +1,83 @@
-# flatwatch — deploy on Synology/Portainer.
-#   docker compose up --build -d
-# Configuration is read from a sibling .env file (copy .env.example).
+# flatwatch — deploy locally or on Portainer (build from this repo).
+#
+#   Local:     cp .env.example .env && docker compose up --build -d
+#   Portainer: Repository stack, Compose path = docker-compose.yml, set vars in
+#              the "Environment variables" panel (see docs/CONTAINER.md §3.3).
+#
+# No env_file: config is mapped via ${VAR} interpolation so it works both ways —
+# a local .env is auto-loaded by Compose for interpolation, and Portainer's panel
+# supplies the same vars. A blank value is treated as "unset" by the app, so each
+# built-in default still applies. **No .env file is ever required.**
 services:
   flatwatch:
     build:
       context: .
       args:
-        # Override with the image tag / git sha at build time:
-        #   docker compose build --build-arg APP_VERSION=$(git rev-parse --short HEAD)
         APP_VERSION: ${APP_VERSION:-dev}
     image: flatwatch:latest
     container_name: flatwatch
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      # Default the health port inside the container; HEALTHCHECK uses it too.
-      HEALTHCHECK_PORT: "8080"
-      JSON_STORE_PATH: "/data/seen.json"
-      HEALTH_PATH: "/data/health.json"
-      RUN_LOG_JSONL_PATH: "/data/runs.jsonl"
+      # --- Sources (set at least one) ---
+      KA_SEARCH_URLS: ${KA_SEARCH_URLS:-}
+      RSS_URLS: ${RSS_URLS:-}
+      # --- Criteria ---
+      MIN_RENT: ${MIN_RENT:-}
+      MAX_RENT: ${MAX_RENT:-}
+      MIN_ROOMS: ${MIN_ROOMS:-}
+      MAX_ROOMS: ${MAX_ROOMS:-}
+      MIN_SQM: ${MIN_SQM:-}
+      MAX_SQM: ${MAX_SQM:-}
+      REQUIRED_KEYWORDS: ${REQUIRED_KEYWORDS:-}
+      EXCLUDED_KEYWORDS: ${EXCLUDED_KEYWORDS:-}
+      # --- Polling / politeness ---
+      POLL_INTERVAL_MIN: ${POLL_INTERVAL_MIN:-}
+      PER_REQUEST_DELAY_S: ${PER_REQUEST_DELAY_S:-}
+      REQUEST_JITTER_S: ${REQUEST_JITTER_S:-}
+      HTTP_TIMEOUT_S: ${HTTP_TIMEOUT_S:-}
+      HTTP_MAX_RETRIES: ${HTTP_MAX_RETRIES:-}
+      USER_AGENT: ${USER_AGENT:-}
+      ENRICH_DETAIL: ${ENRICH_DETAIL:-}
+      # --- Dedup store (NocoDB primary, JSON fallback) ---
+      NOCODB_URL: ${NOCODB_URL:-}
+      NOCODB_TOKEN: ${NOCODB_TOKEN:-}
+      NOCODB_TABLE_ID: ${NOCODB_TABLE_ID:-}
+      NOCODB_ID_FIELD: ${NOCODB_ID_FIELD:-listing_id}
+      # --- Dynamic searches (optional) ---
+      NOCODB_SEARCHES_TABLE_ID: ${NOCODB_SEARCHES_TABLE_ID:-}
+      # --- Results table: full row per match (optional) ---
+      NOCODB_LISTINGS_TABLE_ID: ${NOCODB_LISTINGS_TABLE_ID:-}
+      # --- Notifications (all optional; leave blank to stay silent) ---
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_TO: ${EMAIL_TO:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-}
+      HA_WEBHOOK_URL: ${HA_WEBHOOK_URL:-}
+      MAX_NOTIFY_PER_CYCLE: ${MAX_NOTIFY_PER_CYCLE:-}
+      # --- Health / alerting ---
+      HEALTHCHECK_PORT: ${HEALTHCHECK_PORT:-8080}
+      HEALTH_STALE_AFTER_MIN: ${HEALTH_STALE_AFTER_MIN:-}
+      FAILURE_ALERT_THRESHOLD: ${FAILURE_ALERT_THRESHOLD:-}
+      ALERT_ON_REPEATED_FAILURES: ${ALERT_ON_REPEATED_FAILURES:-}
+      # --- Run-logging ---
+      RUN_LOG_ENABLED: ${RUN_LOG_ENABLED:-}
+      NOCODB_RUNS_TABLE_ID: ${NOCODB_RUNS_TABLE_ID:-}
+      NOCODB_RUN_EVENTS_TABLE_ID: ${NOCODB_RUN_EVENTS_TABLE_ID:-}
+      RUN_LOG_RETENTION_DAYS: ${RUN_LOG_RETENTION_DAYS:-}
+      APP_VERSION: ${APP_VERSION:-dev}
+      # --- Fixed to the persistent volume ---
+      JSON_STORE_PATH: /data/seen.json
+      HEALTH_PATH: /data/health.json
+      RUN_LOG_JSONL_PATH: /data/runs.jsonl
     volumes:
       - flatwatch-data:/data
     ports:
-      # Expose the health endpoint on the host (optional).
-      - "8080:8080"
+      - "${HEALTHCHECK_PORT:-8080}:8080"
 
 volumes:
   flatwatch-data:

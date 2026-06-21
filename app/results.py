@@ -1,0 +1,87 @@
+"""Results sink: write a full row per matching listing to a NocoDB table.
+
+When ``NOCODB_LISTINGS_TABLE_ID`` is set, every newly-matched listing is written
+to a dedicated ``flatwatch_listings`` table with its full attributes — so NocoDB
+becomes the browsable record of everything flatwatch found, independent of
+whether notifications are configured.
+
+Writing is **best-effort and observational** (like run-logging): a failure is
+caught, logged at WARNING, and never propagates to the poll loop. The caller
+writes only the listings it is also persisting as seen, so there is exactly one
+row per listing (no duplicates across notification retries).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from typing import List, Optional
+
+import requests
+
+from .config import Config
+from .models import Listing
+
+log = logging.getLogger("flatwatch.results")
+
+# NocoDB caps bulk inserts around 1000 rows per request.
+_NOCODB_BULK = 1000
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class ResultsSink:
+    """Best-effort writer of full listing rows to the NocoDB results table."""
+
+    def __init__(self, cfg: Config, session: Optional[requests.Session] = None):
+        self.cfg = cfg
+        self._session = session or requests.Session()
+
+    @property
+    def enabled(self) -> bool:
+        return self.cfg.results_enabled
+
+    def _headers(self) -> dict:
+        return {"xc-token": self.cfg.nocodb_token, "Content-Type": "application/json"}
+
+    def _records_url(self) -> str:
+        base = self.cfg.nocodb_url.rstrip("/")
+        return f"{base}/api/v2/tables/{self.cfg.nocodb_listings_table_id}/records"
+
+    @staticmethod
+    def _payload(listing: Listing, first_seen: str) -> dict:
+        return {
+            "listing_id": listing.listing_id,
+            "title": listing.title,
+            "url": listing.url,
+            "source": listing.source,
+            "price": listing.price,
+            "rooms": listing.rooms,
+            "sqm": listing.sqm,
+            "location": listing.location,
+            "description": listing.description,
+            "first_seen": first_seen,
+        }
+
+    def write(self, listings: List[Listing]) -> None:
+        """Bulk-insert full rows for ``listings``. Best-effort; never raises."""
+        if not self.enabled or not listings:
+            return
+        now = _now_iso()
+        payloads = [self._payload(l, now) for l in listings]
+        url = self._records_url()
+        try:
+            for start in range(0, len(payloads), _NOCODB_BULK):
+                batch = payloads[start : start + _NOCODB_BULK]
+                resp = self._session.post(
+                    url, headers=self._headers(), data=json.dumps(batch), timeout=self.cfg.http_timeout_s
+                )
+                resp.raise_for_status()
+            log.info("Wrote %d listing(s) to the NocoDB results table.", len(payloads))
+        except (requests.RequestException, ValueError) as exc:
+            log.warning("Could not write results to NocoDB (non-fatal): %s", exc)
+        except Exception as exc:  # observational: swallow anything
+            log.warning("Unexpected results-write error (ignored): %s", exc)

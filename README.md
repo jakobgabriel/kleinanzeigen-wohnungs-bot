@@ -60,8 +60,8 @@ At least one of `KA_SEARCH_URLS` / `RSS_URLS` is required; with no notification
 channel configured, matches are only logged.
 
 **Portainer / Synology:** deploy a *Repository* stack pointing at
-`docker-compose.portainer.yml` and set your variables in Portainer's *Environment
-variables* panel — full walkthrough in [docs/CONTAINER.md §3.3](docs/CONTAINER.md#33-synology--portainer-git-repository-stack).
+`docker-compose.yml` (no `.env` needed) and set your variables in Portainer's
+*Environment variables* panel — full walkthrough in [docs/CONTAINER.md §3.3](docs/CONTAINER.md#33-synology--portainer-git-repository-stack).
 
 ### Multiple search areas (per-source overrides)
 
@@ -175,6 +175,30 @@ remain the fallback).
 **Resilience:** if the table is unreachable, flatwatch reuses the last-known-good
 list it read; if there is none (or the table is empty / all-disabled) it falls
 back to the env-var searches. Reading searches never blocks a cycle.
+
+### Table: `flatwatch_listings` (results) — `NOCODB_LISTINGS_TABLE_ID` (optional)
+
+Set `NOCODB_LISTINGS_TABLE_ID` to write a **full row per matching listing** here —
+so NocoDB becomes your browsable record of everything flatwatch found, regardless
+of whether notifications are configured. One row per unique match (deduped by
+`listing_id`); a fresh deploy captures the entire current backlog on the first
+cycle. Writing is best-effort and never blocks a cycle.
+
+| Column | Type | Notes |
+|---|---|---|
+| `listing_id` | SingleLineText | Stable dedup key (display column). |
+| `title` | SingleLineText | |
+| `url` | URL / SingleLineText | |
+| `source` | SingleLineText | `kleinanzeigen` / `rss`. |
+| `price` | Decimal | Nullable. |
+| `rooms` | Decimal | Nullable. |
+| `sqm` | Decimal | Nullable. |
+| `location` | SingleLineText | Nullable. |
+| `description` | LongText | Nullable. |
+| `first_seen` | DateTime | When flatwatch first recorded it. |
+
+Tip: set `ENRICH_DETAIL=true` so listings missing price/rooms/sqm on the search
+card are filled from their detail page before being written.
 
 ### Table: `flatwatch_runs` — `NOCODB_RUNS_TABLE_ID`
 

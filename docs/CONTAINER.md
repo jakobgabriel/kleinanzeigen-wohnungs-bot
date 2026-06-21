@@ -99,9 +99,11 @@ docker compose logs -f flatwatch
 ```
 
 The bundled `docker-compose.yml` sets a named `flatwatch-data` volume, the health
-port, `restart: unless-stopped`, and reads everything else from `.env`. Override
-the build version with `APP_VERSION=$(git rev-parse --short HEAD) docker compose build`.
-(For Portainer, use `docker-compose.portainer.yml` instead — see §3.3.)
+port, and `restart: unless-stopped`. It has **no `env_file`** — config is mapped
+via `${VAR}` interpolation, and Compose auto-loads a local `.env` for that, so a
+local `.env` is picked up but never required. Override the build version with
+`APP_VERSION=$(git rev-parse --short HEAD) docker compose build`. The same file is
+used for Portainer (§3.3).
 
 ### 3.2 docker run
 
@@ -117,17 +119,15 @@ docker run -d --name flatwatch --restart unless-stopped \
 ### 3.3 Synology / Portainer (Git repository stack)
 
 No image is published, so the simplest path is a **Repository stack**: Portainer
-clones this repo and builds the image on the NAS. Use
-**`docker-compose.portainer.yml`** (not `docker-compose.yml`) — it has no
+clones this repo and builds the image on the NAS. `docker-compose.yml` has no
 `env_file` and maps the full config surface via `${VAR}` interpolation, so the
 Portainer *Environment variables* panel is what configures the container.
 
 1. **Stacks → Add stack**, name it `flatwatch`. Build method: **Repository**.
 2. Fill in the repository:
    - **Repository URL:** `https://github.com/jakobgabriel/kleinanzeigen-wohnungs-bot`
-   - **Repository reference:** `refs/heads/claude/flatwatch-build-spec-vjbfe9`
-     (or `refs/heads/main` once merged)
-   - **Compose path:** `docker-compose.portainer.yml`
+   - **Repository reference:** `refs/heads/main`
+   - **Compose path:** `docker-compose.yml`
    - *Authentication:* only needed if the repo is private (use a GitHub PAT).
 3. **Environment variables → Advanced mode:** paste your filled-in
    `.env.example` contents (`KEY=VALUE` lines). Set at least one source and one
@@ -235,6 +235,12 @@ non-fatal.
 |---|---|---|
 | `NOCODB_SEARCHES_TABLE_ID` | — | If set, searches (URL + per-search criteria) are read from NocoDB at the start of every cycle. Falls back to env URLs + global criteria. |
 
+### Results table (optional)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `NOCODB_LISTINGS_TABLE_ID` | — | If set, a full row per matching listing (price/rooms/sqm/location/description/first_seen) is written to this NocoDB table. Browse everything in NocoDB even with notifications off; a fresh deploy captures the current backlog. Best-effort, never blocks a cycle. |
+
 ### Notifications (each channel independent; partial config disables just it)
 
 | Variable | Default | Notes |
@@ -297,6 +303,7 @@ documented in the [README](../README.md#nocodb-setup):
 |---|---|---|
 | seen listings | `NOCODB_TABLE_ID` | Dedup store (primary; JSON is the fallback). |
 | `flatwatch_searches` | `NOCODB_SEARCHES_TABLE_ID` | Live search config (URL + per-search criteria). |
+| `flatwatch_listings` | `NOCODB_LISTINGS_TABLE_ID` | Full row per matching listing (results view). |
 | `flatwatch_runs` | `NOCODB_RUNS_TABLE_ID` | One row per cycle. |
 | `flatwatch_run_events` | `NOCODB_RUN_EVENTS_TABLE_ID` | One row per lifecycle phase. |
 
