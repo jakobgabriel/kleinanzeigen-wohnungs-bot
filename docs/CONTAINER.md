@@ -127,7 +127,8 @@ Portainer *Environment variables* panel is what configures the container.
 2. Fill in the repository:
    - **Repository URL:** `https://github.com/jakobgabriel/kleinanzeigen-wohnungs-bot`
    - **Repository reference:** `refs/heads/main`
-   - **Compose path:** `docker-compose.yml`
+   - **Compose path:** `docker-compose.yml` (or `docker-compose.portainer.yml` —
+     they're identical, so existing stacks pointing at either keep working)
    - *Authentication:* only needed if the repo is private (use a GitHub PAT).
 3. **Environment variables → Advanced mode:** paste your filled-in
    `.env.example` contents (`KEY=VALUE` lines). Set at least one source and one

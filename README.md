@@ -60,8 +60,9 @@ At least one of `KA_SEARCH_URLS` / `RSS_URLS` is required; with no notification
 channel configured, matches are only logged.
 
 **Portainer / Synology:** deploy a *Repository* stack pointing at
-`docker-compose.yml` (no `.env` needed) and set your variables in Portainer's
-*Environment variables* panel — full walkthrough in [docs/CONTAINER.md §3.3](docs/CONTAINER.md#33-synology--portainer-git-repository-stack).
+`docker-compose.yml` (or the identical `docker-compose.portainer.yml`; no `.env`
+needed) and set your variables in Portainer's *Environment variables* panel —
+full walkthrough in [docs/CONTAINER.md §3.3](docs/CONTAINER.md#33-synology--portainer-git-repository-stack).
 
 ### Multiple search areas (per-source overrides)
 
