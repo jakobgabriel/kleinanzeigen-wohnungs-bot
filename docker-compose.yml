@@ -86,8 +86,8 @@ services:
     volumes:
       - flatwatch-data:/data
     ports:
-      - "${HEALTHCHECK_PORT:-8080}:8080"
-      - "${MCP_PORT:-8765}:8765"
+      - "${HEALTHCHECK_PORT:-8080}:${HEALTHCHECK_PORT:-8080}"
+      - "${MCP_PORT:-8765}:${MCP_PORT:-8765}"
 
 volumes:
   flatwatch-data:
