@@ -57,6 +57,51 @@ def test_zero_cards_warns(caplog):
     assert any("0 cards parsed" in r.message for r in caplog.records)
 
 
+def test_card_class_rename_self_heals_via_data_adid():
+    # The aditem class is renamed but the data-adid anchor + href-based title
+    # fallback still let the card parse.
+    html = """
+    <html><body><ul id="srchrslt-adtable">
+      <li class="ad-listitem"><article class="ad-card-v2" data-adid="42">
+        <div class="aditem-main--middle">
+          <a class="new-title-class" href="/s-anzeige/wohnung/42-203-1">Schicke Wohnung</a>
+          <p class="aditem-main--middle--price-shipping--price">800 €</p>
+        </div>
+      </article></li>
+    </ul></body></html>
+    """
+    listings = _parse_kleinanzeigen(html)
+    assert len(listings) == 1
+    assert listings[0].listing_id == "kleinanzeigen:42"
+    assert listings[0].title == "Schicke Wohnung"
+    assert listings[0].price == 800.0
+
+
+def test_empty_diagnoses_block_page(caplog):
+    html = "<html><head><title>Sicherheitsabfrage</title></head><body>captcha</body></html>"
+    with caplog.at_level("WARNING"):
+        result = _parse_kleinanzeigen(html)
+    assert result == []
+    msg = next(r.message for r in caplog.records if "0 cards parsed" in r.message)
+    assert "anti-bot/challenge page" in msg
+    assert "not stale selectors" in msg
+
+
+def test_empty_with_results_container_blames_selectors(caplog):
+    html = '<html><body><div id="srchrslt-adtable"></div></body></html>'
+    with caplog.at_level("WARNING"):
+        result = _parse_kleinanzeigen(html)
+    assert result == []
+    assert any("card selectors are likely stale" in r.message for r in caplog.records)
+
+
+def test_empty_page_dumps_html_when_configured(tmp_path):
+    _parse_kleinanzeigen("<html><body>nothing</body></html>", debug_dump_dir=str(tmp_path))
+    dumps = list(tmp_path.glob("ka-empty-*.html"))
+    assert len(dumps) == 1
+    assert "nothing" in dumps[0].read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # RSS parser
 # --------------------------------------------------------------------------- #

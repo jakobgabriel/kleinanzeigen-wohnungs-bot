@@ -10,6 +10,7 @@ field-by-field rather than crashing when a card omits price/rooms/sqm.
 from __future__ import annotations
 
 import logging
+import os
 import random
 import re
 import time
@@ -28,14 +29,61 @@ log = logging.getLogger("flatwatch.sources")
 # Kleinanzeigen selectors — patch here if the markup drifts (B1).
 # --------------------------------------------------------------------------- #
 KA_BASE_URL = "https://www.kleinanzeigen.de"
-KA_CARD_SELECTOR = "article.aditem"
 KA_CARD_ID_ATTR = "data-adid"
-KA_TITLE_SELECTOR = "a.ellipsis"
-KA_PRICE_SELECTOR = "p.aditem-main--middle--price-shipping--price"
+
+# Result cards are <article> nodes carrying the stable ``data-adid`` ad id. The
+# class name (``aditem``) has drifted before, so we try the canonical selector
+# first and fall back to ones anchored on ``data-adid`` — the first selector
+# that matches any card wins, so a class rename self-heals without a code patch.
+KA_CARD_SELECTORS = (
+    "article.aditem",            # canonical markup
+    "article[data-adid]",        # class renamed but still an <article> ad
+    "li.ad-listitem [data-adid]",  # ad nested in the results list
+    "[data-adid]",               # last resort: anything carrying an ad id
+)
+KA_CARD_SELECTOR = KA_CARD_SELECTORS[0]  # back-compat alias
+
+# Title link: ad detail links always contain "/s-anzeige/" in the href, so the
+# href-based fallbacks survive a class rename on the anchor.
+KA_TITLE_SELECTORS = (
+    "a.ellipsis",
+    "h2 a[href]",
+    "a[href*='/s-anzeige/']",
+)
+KA_TITLE_SELECTOR = KA_TITLE_SELECTORS[0]  # back-compat alias
+
+KA_PRICE_SELECTORS = (
+    "p.aditem-main--middle--price-shipping--price",
+    ".aditem-main--middle--price-shipping--price",
+    ".aditem-main--middle--price",
+    "p[class*='price']",
+)
+KA_PRICE_SELECTOR = KA_PRICE_SELECTORS[0]  # back-compat alias
+
 KA_LOCATION_SELECTOR = "div.aditem-main--top--left"
 KA_DESCRIPTION_SELECTOR = "p.aditem-main--middle--description"
 KA_TAGS_SELECTOR = "span.simpletag"
 KA_IMAGE_SELECTOR = "div.aditem-image img"
+
+# Markers that tell a 0-card page apart from genuinely stale selectors:
+#  - a real results page contains the results container, so 0 cards there means
+#    the card markup drifted;
+#  - an anti-bot / captcha / challenge page (DataDome, reCAPTCHA, "Sicherheits-
+#    abfrage", …) returns 200 with none of the results markup — not a selector
+#    problem, so we say so instead of crying "stale selectors".
+KA_RESULTS_CONTAINER_SELECTOR = "#srchrslt-adtable, #srchrslt-content, .srpcontent"
+_KA_BLOCK_MARKERS = (
+    "captcha",
+    "datadome",
+    "sicherheitsabfrage",
+    "ich bin kein roboter",
+    "zugriff verweigert",
+    "access denied",
+    "pardon our interruption",
+    "verify you are a human",
+    "are you a human",
+    "bot detection",
+)
 
 # Detail-page selectors — used only when ENRICH_DETAIL is enabled (B2).
 KA_DETAIL_PRICE_SELECTOR = "#viewad-price"
@@ -120,19 +168,86 @@ def _text(node) -> Optional[str]:
     return text or None
 
 
-def _parse_kleinanzeigen(html: str, base_url: str = KA_BASE_URL, warn_empty: bool = True) -> List[Listing]:
+def _select_first(node, selectors):
+    """Return the first node matched by any selector in order, else ``None``."""
+    for selector in selectors:
+        hit = node.select_one(selector)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _select_cards(soup):
+    """Return result cards, trying each card selector until one matches.
+
+    Anchoring on ``data-adid`` (see :data:`KA_CARD_SELECTORS`) means a rename of
+    the ``aditem`` class no longer zeroes out the parse.
+    """
+    for selector in KA_CARD_SELECTORS:
+        cards = soup.select(selector)
+        if cards:
+            return cards
+    return []
+
+
+def _diagnose_empty(html: str, soup) -> str:
+    """Explain *why* a page yielded no cards, to make the warning actionable.
+
+    Distinguishes a genuine selector drift (real results page, no cards matched)
+    from an anti-bot/challenge page served with HTTP 200, which no selector fix
+    can rescue.
+    """
+    low = html.lower()
+    blockers = [m for m in _KA_BLOCK_MARKERS if m in low]
+    if blockers:
+        return (
+            "response looks like an anti-bot/challenge page (markers: "
+            f"{', '.join(blockers)}) — not stale selectors; the request was likely "
+            "blocked despite a 200 (try a browser-like USER_AGENT / slower polling)"
+        )
+    if soup.select_one(KA_RESULTS_CONTAINER_SELECTOR) is not None:
+        return "results container present but no cards matched — KA card selectors are likely stale"
+    title = _text(soup.select_one("title")) or "?"
+    return (
+        "no results container and no ad cards found — markup may have drifted or the "
+        f"response is not a search page (page title: {title!r}, {len(html)} bytes)"
+    )
+
+
+def _dump_debug_html(html: str, dump_dir: str) -> None:
+    """Best-effort: write the served HTML to ``dump_dir`` for offline inspection."""
+    try:
+        os.makedirs(dump_dir, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        path = os.path.join(dump_dir, f"ka-empty-{stamp}-{len(html)}.html")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        log.warning("Dumped empty Kleinanzeigen response to %s for inspection.", path)
+    except OSError as exc:  # never let a debug dump break a cycle
+        log.warning("Could not dump Kleinanzeigen response to %s: %s", dump_dir, exc)
+
+
+def _parse_kleinanzeigen(
+    html: str,
+    base_url: str = KA_BASE_URL,
+    warn_empty: bool = True,
+    debug_dump_dir: Optional[str] = None,
+) -> List[Listing]:
     """Parse a Kleinanzeigen search-results page into listings.
 
-    Resilient by design (B1): a card missing price/rooms/sqm yields ``None`` for
-    those fields and still parses; if zero cards are found a WARNING is logged in
-    case the selectors have gone stale.
+    Resilient by design (B1): cards are located through a chain of selectors
+    anchored on the stable ``data-adid`` attribute, and a card missing
+    price/rooms/sqm yields ``None`` for those fields and still parses. If zero
+    cards are found, a WARNING is logged with a diagnosis (stale selectors vs. an
+    anti-bot/challenge page) and — when ``debug_dump_dir`` is set — the raw
+    response is written there so the served markup can be inspected.
     """
     soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select(KA_CARD_SELECTOR)
+    cards = _select_cards(soup)
     listings: List[Listing] = []
 
     for card in cards:
-        link = card.select_one(KA_TITLE_SELECTOR)
+        link = _select_first(card, KA_TITLE_SELECTORS)
         title = _text(link)
         href = link.get("href") if link else None
         if not title or not href:
@@ -140,7 +255,7 @@ def _parse_kleinanzeigen(html: str, base_url: str = KA_BASE_URL, warn_empty: boo
         url = urljoin(base_url, href)
         native_id = card.get(KA_CARD_ID_ATTR)
 
-        price = parse_number(_text(card.select_one(KA_PRICE_SELECTOR)))
+        price = parse_number(_text(_select_first(card, KA_PRICE_SELECTORS)))
         location = _text(card.select_one(KA_LOCATION_SELECTOR))
         description = _text(card.select_one(KA_DESCRIPTION_SELECTOR))
 
@@ -171,7 +286,9 @@ def _parse_kleinanzeigen(html: str, base_url: str = KA_BASE_URL, warn_empty: boo
         )
 
     if not listings and warn_empty:
-        log.warning("0 cards parsed from Kleinanzeigen response — selectors may be stale.")
+        log.warning("0 cards parsed from Kleinanzeigen response — %s", _diagnose_empty(html, soup))
+        if debug_dump_dir:
+            _dump_debug_html(html, debug_dump_dir)
     return listings
 
 
@@ -262,6 +379,7 @@ def fetch_kleinanzeigen(
     per_request_delay_s: float = 0.0,
     request_jitter_s: float = 0.0,
     radius_km: Optional[float] = None,
+    debug_dump_dir: Optional[str] = None,
 ) -> List[Listing]:
     """Fetch and parse a Kleinanzeigen search, walking pages until they run out.
 
@@ -297,7 +415,9 @@ def fetch_kleinanzeigen(
             log.info("Stopping pagination for %s at page %d: %s", url, page, exc)
             break
 
-        page_listings = _parse_kleinanzeigen(resp.text, base_url=base, warn_empty=(page == 1))
+        page_listings = _parse_kleinanzeigen(
+            resp.text, base_url=base, warn_empty=(page == 1), debug_dump_dir=debug_dump_dir
+        )
         fresh = [l for l in page_listings if l.listing_id not in seen_ids]
         if not fresh:
             break  # empty page or a repeat of earlier results → past the last page

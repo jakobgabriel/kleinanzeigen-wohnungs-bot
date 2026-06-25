@@ -455,7 +455,8 @@ NocoDB seen table if used), restart. The next run re-primes silently.
 | Symptom | Likely cause / fix |
 |---|---|
 | Container exits immediately, `FATAL: no sources configured` | Set `KA_SEARCH_URLS`/`RSS_URLS` or `NOCODB_SEARCHES_TABLE_ID`. |
-| Log: `0 cards parsed — selectors may be stale` | Kleinanzeigen markup changed. Patch the `KA_*_SELECTOR` constants at the top of `app/sources.py`; the saved fixture under `tests/fixtures/` helps. |
+| Log: `0 cards parsed … KA card selectors are likely stale` | A real results page came back but no cards matched: Kleinanzeigen markup drifted. Patch the `KA_*_SELECTORS` constants at the top of `app/sources.py`; set `KA_DEBUG_DUMP_DIR` to capture the served HTML, and the saved fixture under `tests/fixtures/` helps. |
+| Log: `0 cards parsed … anti-bot/challenge page` | Kleinanzeigen served a captcha/block page with HTTP 200 — *not* a selector problem. Use a browser-like `USER_AGENT`, raise `POLL_INTERVAL_MIN`/delays, and lean on RSS. Set `KA_DEBUG_DUMP_DIR` to inspect the page. |
 | Log: `Source blocked (403)` | You're rate-limited/blocked. Increase `POLL_INTERVAL_MIN`/delays; 403 is intentionally not retried. RSS is the durable backbone. |
 | No notifications, but `new=N` in logs | No channel fully configured (matches are logged only), or a channel failed — check the `notify_item` events / logs. |
 | Duplicate alerts after restart | `/data` not persisted — mount the volume. |

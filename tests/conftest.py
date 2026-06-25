@@ -30,6 +30,7 @@ def make_config(**overrides) -> Config:
         enrich_concurrency=1,
         enrich_delay_s=0.5,
         content_dedup_enabled=True,
+        ka_debug_dump_dir=None,
         recheck_enabled=True,
         recheck_interval_days=1,
         json_store_path="/tmp/flatwatch-test-seen.json",

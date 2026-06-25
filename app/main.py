@@ -109,6 +109,7 @@ def fetch_all(cfg: Config, searches: List[Search], session: requests.Session, ru
                     per_request_delay_s=cfg.per_request_delay_s,
                     request_jitter_s=cfg.request_jitter_s,
                     radius_km=search.radius_km,
+                    debug_dump_dir=cfg.ka_debug_dump_dir,
                 )
             else:
                 found = sources.fetch_rss(
